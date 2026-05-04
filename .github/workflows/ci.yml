@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        id: test
+        run: |
+          go vet ./...
+
+          set +e
+          go test ./... -coverprofile=coverage.out -covermode=atomic > test-output.txt 2>&1
+          exit_code=$?
+          set -e
+
+          total=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+          echo "coverage=$total" >> $GITHUB_OUTPUT
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          {
+            echo "## Test Results"
+            echo ""
+            if [ "$exit_code" -eq 0 ]; then
+              echo "✅ **All tests passed**"
+            else
+              echo "❌ **Some tests failed**"
+              echo ""
+              echo "<details><summary>Test output</summary>"
+              echo ""
+              echo '```'
+              cat test-output.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+            echo ""
+            echo "📊 **Coverage**: \`$total\`"
+          } > report.md
+
+      - name: Post/Update Coverage Comment
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+
+          COMMENT_ID=$(gh api repos/$REPO/issues/$PR_NUM/comments \
+            --jq '.[] | select(.body | contains("<!-- ugo-ci-report -->")) | .id' | head -1)
+
+          python3 << 'PYEOF'
+          import json, os
+
+          with open("report.md") as f:
+            report = f.read()
+
+          body = "<!-- ugo-ci-report -->\n" + report
+          payload = json.dumps({"body": body})
+
+          with open("payload.json", "w") as f:
+            f.write(payload)
+          PYEOF
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api repos/$REPO/issues/comments/$COMMENT_ID \
+              -X PATCH --input payload.json
+          else
+            gh api repos/$REPO/issues/$PR_NUM/comments \
+              -X POST --input payload.json
+          fi
+
+      - name: Fail if tests failed
+        if: steps.test.outputs.exit_code != '0'
+        run: exit 1
