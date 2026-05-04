@@ -43,11 +43,11 @@ tools:
 
 commands:
   plan:
-    cmd: ansible-playbook --check environments/${environment}.yaml playbooks/${playbook}.yaml
+    cmd: ansible-playbook --check environments/${environment}/inventory.yaml playbooks/${playbook}.yaml
     description: "Run an ansible playbook in check mode."
     arguments:
       - name: environment
-        values: [dev, staging, prod]
+        match: "environments/*/inventory.yaml"
       - name: playbook
         match: "playbooks/*.yaml"
   lint:
@@ -66,7 +66,7 @@ commands:
 ### Run commands
 
 ```bash
-ugo plan dev ensure-ssh   # runs: ansible-playbook --check environments/dev.yaml playbooks/ensure-ssh.yaml
+ugo plan dev ensure-ssh   # runs: ansible-playbook --check environments/dev/inventory.yaml playbooks/ensure-ssh.yaml
 ugo lint                  # runs: go test ./...
 ugo check                 # verify tool dependencies
 ugo plan --help           # shows argument validation rules
@@ -123,11 +123,21 @@ Glob vs regex is auto-detected: if the pattern contains `*` or `?` it's treated 
 ### Example
 
 ```bash
-# config: cmd: ansible-playbook environments/${environment}.yaml
-# args:   environment with values [dev, prod]
+# config: cmd: ansible-playbook environments/${environment}/inventory.yaml
+# args:   environment with match "environments/*/inventory.yaml"
 
-ugo plan dev    →   ansible-playbook environments/dev.yaml
-ugo plan test   →   ❌ argument 'environment': value "test" not in allowed values: [dev, prod]
+ugo plan dev    →   ansible-playbook environments/dev/inventory.yaml
+ugo plan test   →   ❌ argument 'environment': no file matching pattern "environments/*/inventory.yaml" found for value "test"
+```
+
+### Enum values
+
+```bash
+# config: cmd: kubectl apply -f ./deployments/${service} --context ${region}
+# args:   region with values [us-east-1, eu-west-1, ap-southeast-1]
+
+ugo deploy api us-east-1   →   kubectl apply -f ./deployments/api --context us-east-1
+ugo deploy api us-west-2   →   ❌ argument 'region': value "us-west-2" not in allowed values: [us-east-1, eu-west-1, ap-southeast-1]
 ```
 
 Running a verb without required arguments shows the error followed by argument validation rules:

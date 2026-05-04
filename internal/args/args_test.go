@@ -119,6 +119,24 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("glob pass - directory name", func(t *testing.T) {
+		dir := t.TempDir()
+		envDir := filepath.Join(dir, "prod")
+		if err := os.Mkdir(envDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "inventory.yaml"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		arg := config.Argument{
+			Name:  "environment",
+			Match: filepath.Join(dir, "*/inventory.yaml"),
+		}
+		if err := Validate(arg, "prod"); err != nil {
+			t.Errorf("Validate(directory name) = %v, want nil", err)
+		}
+	})
+
 	t.Run("glob fail", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "only.yaml"), nil, 0644); err != nil {
