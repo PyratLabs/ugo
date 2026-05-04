@@ -19,9 +19,10 @@ type Tool struct {
 
 // Argument defines a single command argument with optional validation
 type Argument struct {
-	Name   string   `mapstructure:"name"`
-	Values []string `mapstructure:"values"`
-	Match  string   `mapstructure:"match"`
+	Name    string   `mapstructure:"name"`
+	Values  []string `mapstructure:"values"`
+	Match   string   `mapstructure:"match"`
+	Exclude []string `mapstructure:"exclude"`
 }
 
 // Command defines a single verb's configuration

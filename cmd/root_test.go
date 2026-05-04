@@ -231,6 +231,51 @@ commands:
 	}
 }
 
+func TestRootCmdExecuteMultiline(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "multigo.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+commands:
+  multi:
+    cmd: |
+      echo step1
+      echo step2
+      echo step3
+    description: "Run multiple commands"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	os.Args = []string{"multigo"}
+	os.Chdir(dir)
+
+	root := RootCmd()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	root.SetArgs([]string{"multi"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	w.Close()
+	var out bytes.Buffer
+	out.ReadFrom(r)
+	os.Stdout = oldStdout
+
+	output := out.String()
+	for _, want := range []string{"step1", "step2", "step3"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output = %q, want to contain %q", output, want)
+		}
+	}
+}
+
 func TestBuildLong(t *testing.T) {
 	tests := []struct {
 		name      string

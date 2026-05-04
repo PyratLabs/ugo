@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -167,18 +166,9 @@ func buildLong(arguments []config.Argument) string {
 			b.WriteString(strings.Join(arg.Values, ", "))
 		case arg.Match != "":
 			if args.IsGlob(arg.Match) {
-				matches, _ := filepath.Glob(arg.Match)
+				matches := args.GlobMatches(arg.Match, arg.Exclude)
 				if len(matches) > 0 {
-					names := make([]string, len(matches))
-					for i, m := range matches {
-						if isDirGlob(arg.Match) {
-							names[i] = filepath.Base(filepath.Dir(m))
-						} else {
-							base := filepath.Base(m)
-							names[i] = strings.TrimSuffix(base, filepath.Ext(base))
-						}
-					}
-					b.WriteString(strings.Join(names, ", "))
+					b.WriteString(strings.Join(matches, ", "))
 				} else {
 					b.WriteString("(no files found)")
 				}
@@ -234,40 +224,44 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 		return val
 	})
 
-	parts := strings.Fields(expanded)
-	if len(parts) == 0 {
-		output.CheckFail(fmt.Sprintf("empty command configured for '%s'", name))
-		os.Exit(1)
+	lines := strings.Split(expanded, "\n")
+	var cmds []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			cmds = append(cmds, trimmed)
+		}
 	}
 
-	bin := parts[0]
-	cmdArgs := parts[1:]
-
-	output.CommandRunning(name, expanded)
-
-	command := exec.Command(bin, cmdArgs...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.Stdin = os.Stdin
-
-	if err := command.Run(); err != nil {
-		output.CommandFail(name)
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+	for i, line := range cmds {
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
 		}
-		os.Exit(1)
+
+		bin := parts[0]
+		cmdArgs := parts[1:]
+
+		if len(cmds) > 1 {
+			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmds)), line)
+		} else {
+			output.CommandRunning(name, line)
+		}
+
+		command := exec.Command(bin, cmdArgs...)
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		command.Stdin = os.Stdin
+
+		if err := command.Run(); err != nil {
+			output.CommandFail(name)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(1)
+		}
 	}
 
 	output.CommandSuccess(name)
 	return nil
-}
-
-func isDirGlob(pattern string) bool {
-	dir := filepath.Dir(pattern)
-	for _, c := range dir {
-		if c == '*' || c == '?' {
-			return true
-		}
-	}
-	return false
 }

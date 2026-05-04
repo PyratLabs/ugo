@@ -32,11 +32,13 @@ Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args}/*_test
 
 - Verbs are defined in YAML, not hardcoded. Adding a new verb means editing config, not code.
 - Config schema:
-  - `commands.<verb>.{cmd, description, arguments[]}` — arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex)
+  - `commands.<verb>.{cmd, description, arguments[]}` — arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex), optional `exclude` (list of disallowed values)
   - `tools.<binary>.{min_version, max_version, version_cmd, download_url}` — pre-flight checks run before every verb
 - Arguments after the verb are mapped positionally to `arguments` entries and expanded into `${name}` placeholders in `cmd`
+- `cmd` supports multiline YAML block scalars (`|`); each non-empty line is executed sequentially
 - `match` is auto-detected: contains `*` or `?` → glob (checks files on disk); otherwise → regex (full string match, auto-anchored)
-- Glob matching accepts full path, basename, or basename without extension
+- Glob matching accepts full path, basename, basename without extension, or directory name
+- `exclude` filters out values from glob matches and rejects them during validation; excluded values are hidden from help output
 - `ugo check` runs tool checks and prints status for each tool
 - Version comparison uses `golang.org/x/mod/semver`; `version_cmd` output is scanned for a semver pattern
 - Running a verb without required arguments (or with invalid args) prints the error then the help, then exits
