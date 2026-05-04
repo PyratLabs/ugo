@@ -11,6 +11,12 @@ import (
 // Validate checks a single argument value against its validation rules.
 // Returns nil if the argument is valid or has no rules.
 func Validate(arg config.Argument, value string) error {
+	if len(arg.Exclude) > 0 {
+		if err := validateExclude(arg.Name, arg.Exclude, value); err != nil {
+			return err
+		}
+	}
+
 	if len(arg.Values) > 0 {
 		if err := validateEnum(arg.Name, arg.Values, value); err != nil {
 			return err
@@ -23,6 +29,15 @@ func Validate(arg config.Argument, value string) error {
 		}
 	}
 
+	return nil
+}
+
+func validateExclude(name string, exclude []string, actual string) error {
+	for _, v := range exclude {
+		if v == actual {
+			return fmt.Errorf("argument '%s': value %q is not allowed", name, actual)
+		}
+	}
 	return nil
 }
 
@@ -81,6 +96,16 @@ func stripExt(name string) string {
 	return name
 }
 
+func isDirGlob(pattern string) bool {
+	dir := filepath.Dir(pattern)
+	for _, c := range dir {
+		if c == '*' || c == '?' {
+			return true
+		}
+	}
+	return false
+}
+
 // ArgNames extracts argument names for usage display and error messages
 func ArgNames(args []config.Argument) []string {
 	names := make([]string, len(args))
@@ -113,4 +138,36 @@ func ArgMap(arguments []config.Argument, values []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// GlobMatches returns the list of display names from a glob pattern,
+// filtered to exclude any values in the exclude list.
+func GlobMatches(pattern string, exclude []string) []string {
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+
+	isDir := isDirGlob(pattern)
+	excludeSet := make(map[string]bool, len(exclude))
+	for _, v := range exclude {
+		excludeSet[v] = true
+	}
+
+	seen := make(map[string]bool)
+	var names []string
+	for _, m := range matches {
+		var name string
+		if isDir {
+			name = filepath.Base(filepath.Dir(m))
+		} else {
+			name = stripExt(filepath.Base(m))
+		}
+		if excludeSet[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
 }

@@ -115,10 +115,42 @@ Arguments support three validation modes:
 | Mode | Config | Behavior |
 |------|--------|----------|
 | **Enum** | `values: [dev, staging, prod]` | Value must be in the list |
-| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts full path, basename, or basename without extension |
+| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts full path, basename, basename without extension, or directory name |
 | **Regex** | `match: "[a-z]+"` | Full-string regex match (auto-anchored) |
+| **Exclude** | `exclude: [default]` | Disallowed values (hidden from help output) |
 
 Glob vs regex is auto-detected: if the pattern contains `*` or `?` it's treated as a file glob.
+
+### Multiline commands
+
+Use YAML block scalars (`|`) to run multiple commands sequentially:
+
+```yaml
+commands:
+  plan:
+    cmd: |
+      terraform workspace select -or-create=true "${workspace}"
+      terraform plan
+    description: "Run a terraform plan"
+```
+
+Each non-empty line is executed in order. If any command fails, execution stops.
+
+### Exclude values
+
+Combine `match` with `exclude` to hide certain values from glob matches:
+
+```yaml
+commands:
+  plan:
+    cmd: terraform workspace select "${workspace}" && terraform plan
+    arguments:
+      - name: workspace
+        match: config/*.yaml
+        exclude: [default]
+```
+
+Excluded values are rejected during validation and hidden from help output.
 
 ### Example
 

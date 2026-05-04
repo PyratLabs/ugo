@@ -164,6 +164,50 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("exclude pass", func(t *testing.T) {
+		arg := config.Argument{
+			Name:    "workspace",
+			Values:  []string{"dev", "staging", "prod"},
+			Exclude: []string{"staging"},
+		}
+		if err := Validate(arg, "dev"); err != nil {
+			t.Errorf("Validate(dev) = %v, want nil", err)
+		}
+	})
+
+	t.Run("exclude fail", func(t *testing.T) {
+		arg := config.Argument{
+			Name:    "workspace",
+			Values:  []string{"dev", "staging", "prod"},
+			Exclude: []string{"staging"},
+		}
+		err := Validate(arg, "staging")
+		if err == nil {
+			t.Error("expected error for excluded value")
+		}
+	})
+
+	t.Run("exclude with glob - directory name", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, env := range []string{"dev", "default", "prod"} {
+			envDir := filepath.Join(dir, env)
+			os.Mkdir(envDir, 0755)
+			os.WriteFile(filepath.Join(envDir, "inventory.yaml"), nil, 0644)
+		}
+		arg := config.Argument{
+			Name:    "environment",
+			Match:   filepath.Join(dir, "*/inventory.yaml"),
+			Exclude: []string{"default"},
+		}
+		if err := Validate(arg, "dev"); err != nil {
+			t.Errorf("Validate(dev) = %v, want nil", err)
+		}
+		err := Validate(arg, "default")
+		if err == nil {
+			t.Error("expected error for excluded directory name")
+		}
+	})
+
 	t.Run("both enum and regex fail enum", func(t *testing.T) {
 		arg := config.Argument{
 			Name:   "env",
@@ -292,4 +336,72 @@ func TestRegexFullMatch(t *testing.T) {
 	if err := Validate(arg, "xa1x"); err == nil {
 		t.Error("Validate(xa1x) = nil, want error (should not partial match)")
 	}
+}
+
+func TestGlobMatches(t *testing.T) {
+	t.Run("file glob returns basenames without ext", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, f := range []string{"web.yaml", "db.yaml", "api.yaml"} {
+			os.WriteFile(filepath.Join(dir, f), nil, 0644)
+		}
+		got := GlobMatches(filepath.Join(dir, "*.yaml"), nil)
+		if len(got) != 3 {
+			t.Fatalf("expected 3 matches, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("directory glob returns dir names", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, env := range []string{"dev", "staging", "prod"} {
+			envDir := filepath.Join(dir, env)
+			os.Mkdir(envDir, 0755)
+			os.WriteFile(filepath.Join(envDir, "inventory.yaml"), nil, 0644)
+		}
+		got := GlobMatches(filepath.Join(dir, "*/inventory.yaml"), nil)
+		if len(got) != 3 {
+			t.Fatalf("expected 3 matches, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("exclude filters out values", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, f := range []string{"default.yaml", "prod.yaml", "dev.yaml"} {
+			os.WriteFile(filepath.Join(dir, f), nil, 0644)
+		}
+		got := GlobMatches(filepath.Join(dir, "*.yaml"), []string{"default"})
+		for _, name := range got {
+			if name == "default" {
+				t.Errorf("expected 'default' to be excluded, got %v", got)
+			}
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 matches after exclude, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("exclude filters out directory names", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, env := range []string{"default", "prod", "dev"} {
+			envDir := filepath.Join(dir, env)
+			os.Mkdir(envDir, 0755)
+			os.WriteFile(filepath.Join(envDir, "inventory.yaml"), nil, 0644)
+		}
+		got := GlobMatches(filepath.Join(dir, "*/inventory.yaml"), []string{"default"})
+		for _, name := range got {
+			if name == "default" {
+				t.Errorf("expected 'default' to be excluded, got %v", got)
+			}
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 matches after exclude, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("no matches returns nil", func(t *testing.T) {
+		dir := t.TempDir()
+		got := GlobMatches(filepath.Join(dir, "*.yaml"), nil)
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
 }
