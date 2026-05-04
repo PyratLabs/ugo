@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        id: test
+        run: |
+          go vet ./...
+
+          set +e
+          go test ./... -coverprofile=coverage.out -covermode=atomic > test-output.txt 2>&1
+          exit_code=$?
+          set -e
+
+          total=$(go tool cover -func=coverage.out | grep total | awk '{print $NF}')
+          echo "coverage=$total" >> $GITHUB_OUTPUT
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          go tool cover -func=coverage.out > coverage_detail.txt
+
+          EXIT_CODE=$exit_code TOTAL=$total python3 << 'PYEOF'
+          import os, re
+
+          exit_code = int(os.environ.get("EXIT_CODE", "0"))
+          total = os.environ.get("TOTAL", "0.0%")
+
+          # Parse go tool cover -func output
+          with open("coverage_detail.txt") as f:
+              lines = f.readlines()
+
+          pkg_data = {}
+          for line in lines:
+              if not line.strip() or "total" in line.lower():
+                  continue
+              # Format: path/file.go:line:    func        pct%
+              parts = line.split()
+              if len(parts) < 2:
+                  continue
+              file_func = parts[0]
+              pct_str = parts[-1].rstrip('%')
+              try:
+                  pct = float(pct_str)
+              except ValueError:
+                  continue
+
+              # Extract package path
+              if ':' in file_func:
+                  file_path = file_func.split(':')[0]
+              else:
+                  continue
+
+              # Normalize package
+              if file_path.startswith("github.com/"):
+                  segments = file_path.split("/")
+                  if "internal" in segments:
+                      idx = segments.index("internal")
+                      # Keep internal/subpackage structure
+                      pkg = "/".join(segments[:idx+2]) if idx+1 < len(segments) else file_path
+                  else:
+                      pkg = "/".join(segments[:-1])
+                  if not pkg:
+                      pkg = "github.com/PyratLabs/ugo"
+              else:
+                  pkg = file_path
+
+              if pkg not in pkg_data:
+                  pkg_data[pkg] = []
+              pkg_data[pkg].append(pct)
+
+          # Write report
+          with open("report.md", "w") as f:
+              f.write("## Test Results\n\n")
+
+              if exit_code == 0:
+                  f.write("✅ **All tests passed**\n\n")
+              else:
+                  f.write("❌ **Some tests failed**\n\n")
+                  f.write("<details><summary>Test output</summary>\n\n")
+                  f.write("```\n")
+                  with open("test-output.txt") as tf:
+                      f.write(tf.read())
+                  f.write("```\n\n")
+                  f.write("</details>\n\n")
+
+              f.write(f"📊 **Total Coverage**: `{total}`\n\n")
+              f.write("### Coverage by Package\n\n")
+              f.write("| Package | Coverage |\n")
+              f.write("|---------|----------|\n")
+
+              for pkg in sorted(pkg_data.keys()):
+                  pcts = pkg_data[pkg]
+                  avg = sum(pcts) / len(pcts)
+                  f.write(f"| `{pkg}` | `{avg:.1f}%` |\n")
+          PYEOF
+
+      - name: Post/Update Coverage Comment
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+
+          COMMENT_ID=$(gh api repos/$REPO/issues/$PR_NUM/comments \
+            --jq '.[] | select(.body | contains("<!-- ugo-ci-report -->")) | .id' | head -1)
+
+          python3 << 'PYEOF'
+          import json
+
+          with open("report.md") as f:
+            report = f.read()
+
+          body = "<!-- ugo-ci-report -->\n" + report
+          payload = json.dumps({"body": body})
+
+          with open("payload.json", "w") as f:
+            f.write(payload)
+          PYEOF
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api repos/$REPO/issues/comments/$COMMENT_ID \
+              -X PATCH --input payload.json
+          else
+            gh api repos/$REPO/issues/$PR_NUM/comments \
+              -X POST --input payload.json
+          fi
+
+      - name: Fail if tests failed
+        if: steps.test.outputs.exit_code != '0'
+        run: exit 1

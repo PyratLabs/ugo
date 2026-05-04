@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          for platform in $PLATFORMS; do
+            os="${platform%/*}"
+            arch="${platform#*/}"
+            bin="ugo-${os}-${arch}"
+            [ "$os" = "windows" ] && bin="${bin}.exe"
+            GOOS=$os GOARCH=$arch go build -o "$bin" .
+            tar czf "${bin}.tar.gz" "$bin"
+          done
+          ls -la ugo-*.tar.gz
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ugo-*.tar.gz
+          generate_release_notes: true
