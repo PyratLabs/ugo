@@ -1,0 +1,15 @@
+# Built binary
+ugo
+
+# Local project config (global config lives in ~/.config/<binary>/)
+ugo.yaml
+*.yaml
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
