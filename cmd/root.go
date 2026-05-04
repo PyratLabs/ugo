@@ -171,8 +171,12 @@ func buildLong(arguments []config.Argument) string {
 				if len(matches) > 0 {
 					names := make([]string, len(matches))
 					for i, m := range matches {
-						base := filepath.Base(m)
-						names[i] = strings.TrimSuffix(base, filepath.Ext(base))
+						if isDirGlob(arg.Match) {
+							names[i] = filepath.Base(filepath.Dir(m))
+						} else {
+							base := filepath.Base(m)
+							names[i] = strings.TrimSuffix(base, filepath.Ext(base))
+						}
 					}
 					b.WriteString(strings.Join(names, ", "))
 				} else {
@@ -256,4 +260,14 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 
 	output.CommandSuccess(name)
 	return nil
+}
+
+func isDirGlob(pattern string) bool {
+	dir := filepath.Dir(pattern)
+	for _, c := range dir {
+		if c == '*' || c == '?' {
+			return true
+		}
+	}
+	return false
 }

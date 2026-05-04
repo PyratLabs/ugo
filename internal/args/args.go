@@ -45,6 +45,9 @@ func validateMatch(name string, pattern string, actual string) error {
 			if m == actual || filepath.Base(m) == actual || stripExt(filepath.Base(m)) == actual {
 				return nil
 			}
+			if dirMatch := filepath.Base(filepath.Dir(m)); dirMatch == actual {
+				return nil
+			}
 		}
 		return fmt.Errorf("argument '%s': no file matching pattern %q found for value %q", name, pattern, actual)
 	}
