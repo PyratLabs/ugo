@@ -13,6 +13,8 @@ import (
 	"github.com/PyratLabs/ugo/internal/output"
 )
 
+var version = "dev"
+
 var (
 	binaryName string
 	appCfg     *config.Config
@@ -45,7 +47,7 @@ Local config overrides global config for the same verb names.`,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			output.SetNoColor(noColor)
-			if cmd.Name() == "check" || cmd.Name() == "help" {
+			if cmd.Name() == "check" || cmd.Name() == "help" || cmd.Name() == "version" {
 				return nil
 			}
 			return runToolChecks()
@@ -63,6 +65,7 @@ Local config overrides global config for the same verb names.`,
 	}
 
 	root.AddCommand(checkCmd())
+	root.AddCommand(versionCmd())
 
 	return root
 }
@@ -91,6 +94,16 @@ func checkCmd() *cobra.Command {
 
 			fmt.Fprintln(os.Stderr)
 			output.CheckPass("All tool dependencies satisfied")
+		},
+	}
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version number",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(version)
 		},
 	}
 }
@@ -215,45 +228,26 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	}
 
 	vars := args.ArgMap(def.Arguments, values)
+	shellOpts := appCfg.ShellOptions
 
-	expanded := os.Expand(def.Cmd, func(key string) string {
-		val, ok := vars[key]
-		if !ok {
-			return fmt.Sprintf("${%s}", key)
-		}
-		return val
-	})
-
-	lines := strings.Split(expanded, "\n")
-	var cmds []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			cmds = append(cmds, trimmed)
-		}
+	if len(def.Cmds) > 0 {
+		return executeCmdsList(name, def.Cmds, vars, def.Env, shellOpts)
 	}
 
-	for i, line := range cmds {
-		parts := strings.Fields(line)
-		if len(parts) == 0 {
-			continue
-		}
+	return executeCmdString(name, def.Cmd, vars, def.Env, shellOpts)
+}
 
-		bin := parts[0]
-		cmdArgs := parts[1:]
+func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string) error {
+	for i, cmdStr := range cmdsList {
+		expanded := expandVars(cmdStr, vars)
 
-		if len(cmds) > 1 {
-			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmds)), line)
+		if len(cmdsList) > 1 {
+			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), expanded)
 		} else {
-			output.CommandRunning(name, line)
+			output.CommandRunning(name, expanded)
 		}
 
-		command := exec.Command(bin, cmdArgs...)
-		command.Stdout = os.Stdout
-		command.Stderr = os.Stderr
-		command.Stdin = os.Stdin
-
-		if err := command.Run(); err != nil {
+		if err := runShellScript(expanded, env, shellOpts); err != nil {
 			output.CommandFail(name)
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				os.Exit(exitErr.ExitCode())
@@ -264,4 +258,83 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 
 	output.CommandSuccess(name)
 	return nil
+}
+
+func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string) error {
+	expanded := expandVars(cmdStr, vars)
+
+	if strings.Contains(expanded, "\n") {
+		output.CommandRunning(name, "shell script")
+		if err := runShellScript(expanded, env, shellOpts); err != nil {
+			output.CommandFail(name)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(1)
+		}
+	} else {
+		parts := strings.Fields(expanded)
+		if len(parts) == 0 {
+			output.CommandSuccess(name)
+			return nil
+		}
+
+		output.CommandRunning(name, expanded)
+		if err := runCommand(expanded, env); err != nil {
+			output.CommandFail(name)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(1)
+		}
+	}
+
+	output.CommandSuccess(name)
+	return nil
+}
+
+func expandVars(s string, vars map[string]string) string {
+	return os.Expand(s, func(key string) string {
+		val, ok := vars[key]
+		if !ok {
+			return fmt.Sprintf("${%s}", key)
+		}
+		return val
+	})
+}
+
+func runCommand(cmdStr string, env map[string]string) error {
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return nil
+	}
+	command := exec.Command(parts[0], parts[1:]...)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	applyEnv(command, env)
+	return command.Run()
+}
+
+func runShellScript(script string, env map[string]string, shellOpts string) error {
+	if shellOpts != "" {
+		script = shellOpts + "\n" + script
+	}
+	command := exec.Command("sh", "-c", script)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Stdin = os.Stdin
+	applyEnv(command, env)
+	return command.Run()
+}
+
+func applyEnv(cmd *exec.Cmd, env map[string]string) {
+	if len(env) == 0 {
+		return
+	}
+	environ := os.Environ()
+	for k, v := range env {
+		environ = append(environ, fmt.Sprintf("%s=%s", k, v))
+	}
+	cmd.Env = environ
 }

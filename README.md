@@ -16,7 +16,7 @@ automatically, allowing multiple instances for different projects.
 ### Install
 
 ```bash
-go install github.com/xanmanning/ugo@latest
+go install github.com/PyratLabs/ugo@latest
 ```
 
 Or build from source:
@@ -69,6 +69,7 @@ commands:
 ugo plan dev ensure-ssh   # runs: ansible-playbook --check environments/dev/inventory.yaml playbooks/ensure-ssh.yaml
 ugo lint                  # runs: go test ./...
 ugo check                 # verify tool dependencies
+ugo version               # print the version
 ugo plan --help           # shows argument validation rules
 ugo --no-color            # disable colored output
 ```
@@ -81,6 +82,16 @@ uGo loads configuration from two locations and merges them (local overrides glob
 |----------|--------------------------------------------|
 | Global   | `~/.config/<binary>/config.yaml`           |
 | Local    | `<project-root>/<binary>.yaml`             |
+
+### Shell options
+
+Set `shell_options` to prepend shell flags to all commands that run via `sh -c` (multiline `cmd` and all `cmds` items):
+
+```yaml
+shell_options: "set -euo pipefail"
+```
+
+This enables strict mode: exit on error (`-e`), unset variable error (`-u`), and pipe failure detection (`-o pipefail`).
 
 ### Config format
 
@@ -95,12 +106,27 @@ tools:
     download_url: "<url>"          # shown if tool is missing (optional)
 ```
 
+If no `min_version` or `max_version` is specified, uGo only checks that the tool exists in `$PATH`:
+
+```yaml
+tools:
+  terraform:                       # just check it exists
+    download_url: "https://terraform.io/downloads"
+```
+
 #### Commands
 
 ```yaml
 commands:
   <verb>:
-    cmd: "<shell command with ${arg} templates>"
+    cmd: "<single command with ${arg} templates>"      # string: runs directly (single-line) or as shell script (multi-line)
+    cmds:                                              # list: each item runs via sh -c (supports shell features)
+      - "echo ${arg}"
+      - |
+        echo "multi-line"
+        echo "script"
+    env:                                               # optional: environment variables for the command
+      MY_VAR: "value"
     description: "<short help text>"
     arguments:                     # positional argument definitions (optional)
       - name: <arg1>
@@ -123,7 +149,7 @@ Glob vs regex is auto-detected: if the pattern contains `*` or `?` it's treated 
 
 ### Multiline commands
 
-Use YAML block scalars (`|`) to run multiple commands sequentially:
+**`cmd` with multiline** — runs the entire block as a shell script via `sh -c`:
 
 ```yaml
 commands:
@@ -134,7 +160,22 @@ commands:
     description: "Run a terraform plan"
 ```
 
-Each non-empty line is executed in order. If any command fails, execution stops.
+**`cmds` list** — each item runs via `sh -c`, so shell features (variables, subshells, pipes) work:
+
+```yaml
+commands:
+  deploy:
+    cmds:
+      - 'echo "Deploying to $ENV"'
+      - |
+        echo "Running in subshell"
+        (
+          cd /tmp && pwd
+        )
+    env:
+      ENV: "production"
+    description: "Deploy with shell features"
+```
 
 ### Exclude values
 

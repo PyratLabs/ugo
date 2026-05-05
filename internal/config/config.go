@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 )
 
 // Tool defines a required tool dependency
@@ -27,16 +28,19 @@ type Argument struct {
 
 // Command defines a single verb's configuration
 type Command struct {
-	Name        string     `mapstructure:"name"`
-	Cmd         string     `mapstructure:"cmd"`
-	Description string     `mapstructure:"description"`
-	Arguments   []Argument `mapstructure:"arguments"`
+	Name        string            `mapstructure:"name"`
+	Cmd         string            `mapstructure:"cmd"`
+	Cmds        []string          `mapstructure:"cmds"`
+	Env         map[string]string `mapstructure:"env"`
+	Description string            `mapstructure:"description"`
+	Arguments   []Argument        `mapstructure:"arguments"`
 }
 
 // Config represents the full YAML configuration
 type Config struct {
-	Commands map[string]Command `mapstructure:"commands"`
-	Tools    map[string]Tool    `mapstructure:"tools"`
+	Commands      map[string]Command `mapstructure:"commands"`
+	Tools         map[string]Tool    `mapstructure:"tools"`
+	ShellOptions  string             `mapstructure:"shell_options"`   // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
 // Load merges global and local configs. Local overrides global.
@@ -93,7 +97,71 @@ func loadConfigFile(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Viper lowercases map keys, so we need to re-read env maps manually
+	// to preserve the original case of environment variable names
+	if err := rereadEnvMaps(v, cfg); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
+	configFile := v.ConfigFileUsed()
+	if configFile == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil // Ignore read errors, env will be empty
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil // Ignore parse errors
+	}
+
+	commandsRaw, ok := raw["commands"]
+	if !ok {
+		return nil
+	}
+
+	commands, ok := commandsRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	for name, cmdRaw := range commands {
+		cmdMap, ok := cmdRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		envRaw, ok := cmdMap["env"]
+		if !ok {
+			continue
+		}
+
+		envMap, ok := envRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		env := make(map[string]string)
+		for k, v := range envMap {
+			if strVal, ok := v.(string); ok {
+				env[k] = strVal
+			}
+		}
+
+		if cmd, exists := cfg.Commands[name]; exists {
+			cmd.Env = env
+			cfg.Commands[name] = cmd
+		}
+	}
+
+	return nil
 }
 
 func mergeConfigs(global, local *Config) *Config {
