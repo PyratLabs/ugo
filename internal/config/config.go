@@ -31,6 +31,7 @@ type Prompt struct {
 	Name        string `mapstructure:"name"`
 	Description string `mapstructure:"description"`
 	Sensitive   bool   `mapstructure:"sensitive"`
+	FromEnvVar  string `mapstructure:"from_env_var"`
 }
 
 // Command defines a single verb's configuration

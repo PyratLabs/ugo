@@ -204,6 +204,9 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 		for _, p := range prompts {
 			b.WriteString(fmt.Sprintf("  %-20s", p.Name))
 			b.WriteString(p.Description)
+			if p.FromEnvVar != "" {
+				b.WriteString(fmt.Sprintf(" (or $%s)", p.FromEnvVar))
+			}
 			if p.Sensitive {
 				b.WriteString(" (sensitive)")
 			}
@@ -250,17 +253,32 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	// Collect interactive prompt values
 	for _, p := range def.Prompts {
 		var value string
-		var err error
-		if p.Sensitive {
-			sensitiveNames[p.Name] = true
-			value, err = readSensitiveInput(p.Description)
-		} else {
-			value, err = readInput(p.Description)
+
+		// Check from_env_var first
+		if p.FromEnvVar != "" {
+			if envVal, ok := os.LookupEnv(p.FromEnvVar); ok {
+				value = envVal
+				if p.Sensitive {
+					sensitiveNames[p.Name] = true
+				}
+			}
 		}
-		if err != nil {
-			output.CheckFail(fmt.Sprintf("failed to read input for '%s': %v", p.Name, err))
-			os.Exit(1)
+
+		// Prompt if no value from env var
+		if value == "" {
+			var err error
+			if p.Sensitive {
+				sensitiveNames[p.Name] = true
+				value, err = readSensitiveInput(p.Description)
+			} else {
+				value, err = readInput(p.Description)
+			}
+			if err != nil {
+				output.CheckFail(fmt.Sprintf("failed to read input for '%s': %v", p.Name, err))
+				os.Exit(1)
+			}
 		}
+
 		vars[p.Name] = value
 	}
 
