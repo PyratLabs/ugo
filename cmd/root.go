@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"github.com/PyratLabs/ugo/internal/checker"
 	"github.com/PyratLabs/ugo/internal/config"
 	"github.com/PyratLabs/ugo/internal/output"
+	"golang.org/x/term"
 )
 
 var version = "dev"
@@ -154,9 +156,9 @@ func runToolChecks() error {
 
 func buildCommand(name string, def config.Command) *cobra.Command {
 	c := &cobra.Command{
-		Use:   buildUse(name, def.Arguments),
+		Use:   buildUse(name, def.Arguments, def.Prompts),
 		Short: def.Description,
-		Long:  buildLong(def.Arguments),
+		Long:  buildLong(def.Arguments, def.Prompts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return executeCommand(cmd, name, def, args)
 		},
@@ -165,39 +167,54 @@ func buildCommand(name string, def config.Command) *cobra.Command {
 	return c
 }
 
-func buildLong(arguments []config.Argument) string {
-	if len(arguments) == 0 {
+func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
+	if len(arguments) == 0 && len(prompts) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
-	b.WriteString("\nArguments:\n")
-	for _, arg := range arguments {
-		b.WriteString(fmt.Sprintf("  %-20s", arg.Name))
-		switch {
-		case len(arg.Values) > 0:
-			b.WriteString(strings.Join(arg.Values, ", "))
-		case arg.Match != "":
-			if args.IsGlob(arg.Match) {
-				matches := args.GlobMatches(arg.Match, arg.Exclude)
-				if len(matches) > 0 {
-					b.WriteString(strings.Join(matches, ", "))
+
+	if len(arguments) > 0 {
+		b.WriteString("\nArguments:\n")
+		for _, arg := range arguments {
+			b.WriteString(fmt.Sprintf("  %-20s", arg.Name))
+			switch {
+			case len(arg.Values) > 0:
+				b.WriteString(strings.Join(arg.Values, ", "))
+			case arg.Match != "":
+				if args.IsGlob(arg.Match) {
+					matches := args.GlobMatches(arg.Match, arg.Exclude)
+					if len(matches) > 0 {
+						b.WriteString(strings.Join(matches, ", "))
+					} else {
+						b.WriteString("(no files found)")
+					}
 				} else {
-					b.WriteString("(no files found)")
+					b.WriteString(fmt.Sprintf("^%s$", arg.Match))
 				}
-			} else {
-				b.WriteString(fmt.Sprintf("^%s$", arg.Match))
+			default:
+				b.WriteString("(no validation)")
 			}
-		default:
-			b.WriteString("(no validation)")
+			b.WriteString("\n")
 		}
-		b.WriteString("\n")
+	}
+
+	if len(prompts) > 0 {
+		b.WriteString("\nPrompts:\n")
+		for _, p := range prompts {
+			b.WriteString(fmt.Sprintf("  %-20s", p.Name))
+			b.WriteString(p.Description)
+			if p.Sensitive {
+				b.WriteString(" (sensitive)")
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()
 }
 
-func buildUse(name string, arguments []config.Argument) string {
+func buildUse(name string, arguments []config.Argument, prompts []config.Prompt) string {
 	if len(arguments) == 0 {
 		return name
 	}
@@ -228,23 +245,67 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	}
 
 	vars := args.ArgMap(def.Arguments, values)
+	sensitiveNames := make(map[string]bool)
+
+	// Collect interactive prompt values
+	for _, p := range def.Prompts {
+		var value string
+		var err error
+		if p.Sensitive {
+			sensitiveNames[p.Name] = true
+			value, err = readSensitiveInput(p.Description)
+		} else {
+			value, err = readInput(p.Description)
+		}
+		if err != nil {
+			output.CheckFail(fmt.Sprintf("failed to read input for '%s': %v", p.Name, err))
+			os.Exit(1)
+		}
+		vars[p.Name] = value
+	}
+
+	// Expand env values against argument and prompt vars
+	expandedEnv := expandEnv(def.Env, vars)
 	shellOpts := appCfg.ShellOptions
 
 	if len(def.Cmds) > 0 {
-		return executeCmdsList(name, def.Cmds, vars, def.Env, shellOpts)
+		return executeCmdsList(name, def.Cmds, vars, expandedEnv, shellOpts, sensitiveNames)
 	}
 
-	return executeCmdString(name, def.Cmd, vars, def.Env, shellOpts)
+	return executeCmdString(name, def.Cmd, vars, expandedEnv, shellOpts, sensitiveNames)
 }
 
-func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string) error {
+func readInput(description string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s: ", description)
+	reader := bufio.NewReader(os.Stdin)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(input, "\n\r"), nil
+}
+
+func readSensitiveInput(description string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s: ", description)
+	bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(bytepw), nil
+}
+
+func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
+	displayVars := output.MaskedVars(vars, sensitiveNames)
+
 	for i, cmdStr := range cmdsList {
 		expanded := expandVars(cmdStr, vars)
+		display := expandVars(cmdStr, displayVars)
 
 		if len(cmdsList) > 1 {
-			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), expanded)
+			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), display)
 		} else {
-			output.CommandRunning(name, expanded)
+			output.CommandRunning(name, display)
 		}
 
 		if err := runShellScript(expanded, env, shellOpts); err != nil {
@@ -260,8 +321,10 @@ func executeCmdsList(name string, cmdsList []string, vars map[string]string, env
 	return nil
 }
 
-func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string) error {
+func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
 	expanded := expandVars(cmdStr, vars)
+	displayVars := output.MaskedVars(vars, sensitiveNames)
+	display := expandVars(cmdStr, displayVars)
 
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
@@ -279,7 +342,7 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 			return nil
 		}
 
-		output.CommandRunning(name, expanded)
+		output.CommandRunning(name, display)
 		if err := runCommand(expanded, env); err != nil {
 			output.CommandFail(name)
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -301,6 +364,18 @@ func expandVars(s string, vars map[string]string) string {
 		}
 		return val
 	})
+}
+
+// expandEnv expands ${var} references in all env values against the vars map.
+func expandEnv(env map[string]string, vars map[string]string) map[string]string {
+	if len(env) == 0 {
+		return env
+	}
+	expanded := make(map[string]string, len(env))
+	for k, v := range env {
+		expanded[k] = expandVars(v, vars)
+	}
+	return expanded
 }
 
 func runCommand(cmdStr string, env map[string]string) error {

@@ -15,6 +15,7 @@ func TestBuildUse(t *testing.T) {
 		name      string
 		verb      string
 		arguments []config.Argument
+		prompts   []config.Prompt
 		want      string
 	}{
 		{
@@ -41,13 +42,26 @@ func TestBuildUse(t *testing.T) {
 			arguments: []config.Argument{},
 			want:      "test",
 		},
+		{
+			name:      "prompts only",
+			verb:      "login",
+			prompts:   []config.Prompt{{Name: "password", Description: "Enter password", Sensitive: true}},
+			want:      "login",
+		},
+		{
+			name:      "arguments and prompts",
+			verb:      "deploy",
+			arguments: []config.Argument{{Name: "env"}},
+			prompts:   []config.Prompt{{Name: "token", Description: "API token", Sensitive: true}},
+			want:      "deploy <env>",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildUse(tt.verb, tt.arguments)
+			got := buildUse(tt.verb, tt.arguments, tt.prompts)
 			if got != tt.want {
-				t.Errorf("buildUse(%q, %v) = %q, want %q", tt.verb, tt.arguments, got, tt.want)
+				t.Errorf("buildUse(%q, %v, %v) = %q, want %q", tt.verb, tt.arguments, tt.prompts, got, tt.want)
 			}
 		})
 	}
@@ -175,6 +189,17 @@ func TestBuildCommand(t *testing.T) {
 			},
 			wantUse:  "lint",
 			wantDesc: "Run linter",
+		},
+		{
+			name:    "with prompts",
+			cmdName: "login",
+			def: config.Command{
+				Cmd:         "echo ${password}",
+				Description: "Login",
+				Prompts:     []config.Prompt{{Name: "password", Description: "Enter password", Sensitive: true}},
+			},
+			wantUse:  "login",
+			wantDesc: "Login",
 		},
 	}
 
@@ -370,6 +395,7 @@ func TestBuildLong(t *testing.T) {
 	tests := []struct {
 		name      string
 		arguments []config.Argument
+		prompts   []config.Prompt
 		want      []string
 	}{
 		{
@@ -398,22 +424,111 @@ func TestBuildLong(t *testing.T) {
 			},
 			want: []string{"(no validation)"},
 		},
+		{
+			name: "prompts in help",
+			prompts: []config.Prompt{
+				{Name: "token", Description: "API token", Sensitive: true},
+				{Name: "username", Description: "User name"},
+			},
+			want: []string{"token", "API token", "(sensitive)", "username", "User name"},
+		},
+		{
+			name: "both arguments and prompts",
+			arguments: []config.Argument{
+				{Name: "env", Values: []string{"dev", "prod"}},
+			},
+			prompts: []config.Prompt{
+				{Name: "password", Description: "Enter password", Sensitive: true},
+			},
+			want: []string{"Arguments", "Prompts", "password", "Enter password", "(sensitive)", "env", "dev, prod"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildLong(tt.arguments)
+			got := buildLong(tt.arguments, tt.prompts)
 			if len(tt.want) == 0 {
 				if got != "" {
 					t.Errorf("buildLong() = %q, want empty", got)
 				}
 				return
 			}
-			for _, w := range tt.want {
-				if !strings.Contains(got, w) {
-					t.Errorf("buildLong() = %q, want to contain %q", got, w)
-				}
+		for _, w := range tt.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("buildLong() = %q, want to contain %q", got, w)
 			}
-		})
+		}
+	})
 	}
+}
+
+func TestExpandEnv(t *testing.T) {
+	vars := map[string]string{
+		"env":      "prod",
+		"api_key":  "secret123",
+		"username": "admin",
+	}
+
+	t.Run("expands all env values", func(t *testing.T) {
+		env := map[string]string{
+			"DEPLOY_ENV":  "${env}",
+			"API_KEY":     "${api_key}",
+			"USER":        "${username}",
+		}
+		got := expandEnv(env, vars)
+		if got["DEPLOY_ENV"] != "prod" {
+			t.Errorf("DEPLOY_ENV = %q, want %q", got["DEPLOY_ENV"], "prod")
+		}
+		if got["API_KEY"] != "secret123" {
+			t.Errorf("API_KEY = %q, want %q", got["API_KEY"], "secret123")
+		}
+		if got["USER"] != "admin" {
+			t.Errorf("USER = %q, want %q", got["USER"], "admin")
+		}
+	})
+
+	t.Run("preserves literal values with no vars", func(t *testing.T) {
+		env := map[string]string{
+			"STATIC": "hello",
+		}
+		got := expandEnv(env, vars)
+		if got["STATIC"] != "hello" {
+			t.Errorf("STATIC = %q, want %q", got["STATIC"], "hello")
+		}
+	})
+
+	t.Run("empty env returns empty", func(t *testing.T) {
+		got := expandEnv(nil, vars)
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+		got2 := expandEnv(map[string]string{}, vars)
+		if len(got2) != 0 {
+			t.Errorf("expected empty map, got %v", got2)
+		}
+	})
+
+	t.Run("missing var leaves placeholder", func(t *testing.T) {
+		env := map[string]string{
+			"MISSING": "${nonexistent}",
+		}
+		got := expandEnv(env, vars)
+		if got["MISSING"] != "${nonexistent}" {
+			t.Errorf("MISSING = %q, want %q", got["MISSING"], "${nonexistent}")
+		}
+	})
+
+	t.Run("mixed static and dynamic values", func(t *testing.T) {
+		env := map[string]string{
+			"ENV":      "${env}",
+			"STATIC":   "static-value",
+		}
+		got := expandEnv(env, vars)
+		if got["ENV"] != "prod" {
+			t.Errorf("ENV = %q, want %q", got["ENV"], "prod")
+		}
+		if got["STATIC"] != "static-value" {
+			t.Errorf("STATIC = %q, want %q", got["STATIC"], "static-value")
+		}
+	})
 }

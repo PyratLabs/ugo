@@ -125,13 +125,67 @@ commands:
       - |
         echo "multi-line"
         echo "script"
-    env:                                               # optional: environment variables for the command
+    env:                                               # optional: environment variables (supports ${arg} / ${prompt} expansion)
       MY_VAR: "value"
+      TOKEN: "${api_token}"
     description: "<short help text>"
     arguments:                     # positional argument definitions (optional)
       - name: <arg1>
         values: [val1, val2]       # optional: restrict to enum values
         match: "<glob or regex>"   # optional: validate with file glob or regex
+    prompts:                       # interactive prompts (optional)
+      - name: api_token
+        description: "Enter your API token"
+        sensitive: true            # optional: masks input and display
+```
+
+#### Prompts
+
+Prompts collect user input interactively at runtime. Values are referenced in `cmd`/`cmds`/`env` via `${name}` templates, just like arguments.
+
+```yaml
+commands:
+  deploy:
+    cmd: kubectl apply -f ${manifest} --token ${api_token}
+    description: "Deploy with an API token"
+    arguments:
+      - name: manifest
+        match: "*.yaml"
+    prompts:
+      - name: api_token
+        description: "Enter API token"
+        sensitive: true
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Template variable name (used as `${name}` in commands) |
+| `description` | Question shown to the user at the prompt |
+| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output; the real value is passed to the command |
+
+Running the above command will prompt for the token, mask it on screen, and expand both `${manifest}` and `${api_token}` in the command:
+
+```bash
+$ ugo deploy deployment.yaml
+Enter API token:         # input is hidden
+🚀 deploy: kubectl apply -f deployment.yaml --token ********
+```
+
+#### Environment variable expansion
+
+`env` values support `${name}` template expansion from both arguments and prompts:
+
+```yaml
+commands:
+  deploy:
+    cmds:
+      - 'echo "$MY_TOKEN"'
+    env:
+      MY_TOKEN: "${api_token}"
+    prompts:
+      - name: api_token
+        description: "Enter API token"
+        sensitive: true
 ```
 
 #### Argument validation
@@ -213,7 +267,7 @@ ugo deploy api us-east-1   →   kubectl apply -f ./deployments/api --context us
 ugo deploy api us-west-2   →   ❌ argument 'region': value "us-west-2" not in allowed values: [us-east-1, eu-west-1, ap-southeast-1]
 ```
 
-Running a verb without required arguments shows the error followed by argument validation rules:
+Running a verb without required arguments shows the error followed by argument and prompt validation rules:
 
 ```bash
 $ ugo plan
@@ -226,6 +280,21 @@ Arguments:
 
 Usage:
   ugo plan <environment> <playbook> [flags]
+```
+
+When prompts are defined, they appear in the help output:
+
+```bash
+$ ugo deploy --help
+
+Arguments:
+  manifest            *.yaml
+
+Prompts:
+  api_token           Enter API token (sensitive)
+
+Usage:
+  ugo deploy <manifest> [flags]
 ```
 
 ## Tool Dependency Checks

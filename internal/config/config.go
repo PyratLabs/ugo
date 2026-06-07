@@ -26,6 +26,13 @@ type Argument struct {
 	Exclude []string `mapstructure:"exclude"`
 }
 
+// Prompt defines an interactive prompt that collects user input at runtime.
+type Prompt struct {
+	Name        string `mapstructure:"name"`
+	Description string `mapstructure:"description"`
+	Sensitive   bool   `mapstructure:"sensitive"`
+}
+
 // Command defines a single verb's configuration
 type Command struct {
 	Name        string            `mapstructure:"name"`
@@ -34,6 +41,7 @@ type Command struct {
 	Env         map[string]string `mapstructure:"env"`
 	Description string            `mapstructure:"description"`
 	Arguments   []Argument        `mapstructure:"arguments"`
+	Prompts     []Prompt          `mapstructure:"prompts"`
 }
 
 // Config represents the full YAML configuration

@@ -91,3 +91,23 @@ func bold(s string) string {
 func Bold(s string) string {
 	return bold(s)
 }
+
+const mask = "********"
+
+// MaskVar returns a masked placeholder if the variable name is sensitive,
+// otherwise returns the original value.
+func MaskVar(name string, value string, sensitiveNames map[string]bool) string {
+	if sensitiveNames[name] {
+		return mask
+	}
+	return value
+}
+
+// MaskedVars returns a copy of vars with sensitive values replaced by the mask.
+func MaskedVars(vars map[string]string, sensitiveNames map[string]bool) map[string]string {
+	masked := make(map[string]string, len(vars))
+	for k, v := range vars {
+		masked[k] = MaskVar(k, v, sensitiveNames)
+	}
+	return masked
+}
