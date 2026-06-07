@@ -162,6 +162,7 @@ commands:
 | `name` | Template variable name (used as `${name}` in commands) |
 | `description` | Question shown to the user at the prompt |
 | `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output; the real value is passed to the command |
+| `from_env_var` | If set, the prompt is skipped when this environment variable is already set; its value is used directly. Falls through to interactive prompt when unset or empty |
 
 Running the above command will prompt for the token, mask it on screen, and expand both `${manifest}` and `${api_token}` in the command:
 
@@ -169,6 +170,20 @@ Running the above command will prompt for the token, mask it on screen, and expa
 $ ugo deploy deployment.yaml
 Enter API token:         # input is hidden
 🚀 deploy: kubectl apply -f deployment.yaml --token ********
+```
+
+With `from_env_var`, if the environment variable is set, no prompt appears:
+
+```bash
+$ API_TOKEN=sk-abc123 ugo deploy deployment.yaml
+🚀 deploy: kubectl apply -f deployment.yaml --token ********
+```
+
+The help output shows the env var fallback:
+
+```bash
+Prompts:
+  api_token           Enter API token (or $API_TOKEN) (sensitive)
 ```
 
 #### Environment variable expansion
