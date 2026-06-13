@@ -3,8 +3,10 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/PyratLabs/ugo/internal/checker"
 	"github.com/PyratLabs/ugo/internal/config"
 	"github.com/PyratLabs/ugo/internal/output"
+	"github.com/PyratLabs/ugo/internal/trust"
 	"golang.org/x/term"
 )
 
@@ -22,6 +25,7 @@ var (
 	binaryName string
 	appCfg     *config.Config
 	noColor    bool
+	trustFlag  bool
 )
 
 func RootCmd() *cobra.Command {
@@ -50,7 +54,18 @@ Local config overrides global config for the same verb names.`,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			output.SetNoColor(noColor)
-			if cmd.Name() == "check" || cmd.Name() == "help" || cmd.Name() == "version" {
+			// help and version never execute anything from the config.
+			if cmd.Name() == "help" || cmd.Name() == "version" {
+				return nil
+			}
+			// Everything else (verbs and check) can run config-defined
+			// commands, so the local config must be trusted first.
+			if err := enforceTrust(); err != nil {
+				output.CheckFail(err.Error())
+				os.Exit(1)
+			}
+			// check does its own tool checking in its Run.
+			if cmd.Name() == "check" {
 				return nil
 			}
 			return runToolChecks()
@@ -58,6 +73,7 @@ Local config overrides global config for the same verb names.`,
 	}
 
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
+	root.PersistentFlags().BoolVar(&trustFlag, "trust", false, "trust this directory's config without prompting (for CI/CD)")
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		return fmt.Errorf("unknown flag: %s\nRun '%s help' for usage", err.Error(), binaryName)
 	})
@@ -159,6 +175,88 @@ func runToolChecks() error {
 	}
 	os.Exit(1)
 	return nil
+}
+
+// enforceTrust gates execution of config-defined commands behind the trust
+// store, prompting on os.Stdin or honoring --trust. It is thin glue over
+// trustGate so the latter stays free of globals and easy to test.
+func enforceTrust() error {
+	_, localPath := config.ConfigPaths(binaryName)
+	storePath, err := trust.DefaultStorePath(binaryName)
+	if err != nil {
+		return err
+	}
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	return trustGate(localPath, storePath, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+}
+
+// trustGate decides whether the local config may be executed. It returns nil to
+// allow execution or an error explaining why it is blocked. allow corresponds
+// to --trust; interactive reports whether prompting is possible.
+func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
+	// Only the working-directory config is gated; the global config is
+	// user-owned and implicitly trusted.
+	if !fileExists(localPath) {
+		return nil
+	}
+
+	absPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return err
+	}
+	hash, err := trust.HashFile(localPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", localPath, err)
+	}
+
+	store, err := trust.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("loading trust store: %w", err)
+	}
+
+	status := store.Status(absPath, hash)
+	if status == trust.Trusted {
+		return nil
+	}
+
+	// --trust: skip the prompt and record trust (best-effort, so a read-only
+	// home in CI/CD doesn't fail the run).
+	if allow {
+		if err := store.Trust(absPath, hash); err != nil {
+			fmt.Fprintf(out, "    warning: could not record trust for %s: %v\n", absPath, err)
+		}
+		return nil
+	}
+
+	if !interactive {
+		return fmt.Errorf("%s is not trusted; re-run with --trust to allow it (e.g. in CI/CD)", localPath)
+	}
+
+	fmt.Fprintln(out)
+	if status == trust.Changed {
+		fmt.Fprintf(out, "    ⚠️  %s has changed since it was last trusted.\n", absPath)
+	} else {
+		fmt.Fprintf(out, "    ⚠️  %s is not trusted.\n", absPath)
+	}
+	fmt.Fprintln(out, "    Running a verb here will execute the commands defined in this file.")
+	fmt.Fprint(out, "    Trust it? [y/N]: ")
+
+	line, _ := in.ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		if err := store.Trust(absPath, hash); err != nil {
+			return fmt.Errorf("recording trust: %w", err)
+		}
+		fmt.Fprintf(out, "    trusted %s\n\n", absPath)
+		return nil
+	default:
+		return fmt.Errorf("%s not trusted; aborting", localPath)
+	}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func buildCommand(name string, def config.Command) *cobra.Command {

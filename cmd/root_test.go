@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -203,52 +204,20 @@ func TestBuildCommand(t *testing.T) {
 }
 
 func TestRootCmdExecute(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "execgo.yaml")
-	if err := os.WriteFile(configPath, []byte(`
+	out := runVerb(t, "execgo", `
 commands:
   hello:
     cmd: echo hello
     description: "Say hello"
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
+`, "hello")
 
-	os.Args = []string{"execgo"}
-	os.Chdir(dir)
-
-	root := RootCmd()
-
-	// Capture stdout since the command writes to os.Stdout
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	root.SetArgs([]string{"hello"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	w.Close()
-	var out bytes.Buffer
-	out.ReadFrom(r)
-	os.Stdout = oldStdout
-
-	if !strings.Contains(out.String(), "hello") {
-		t.Errorf("output = %q, want to contain %q", out.String(), "hello")
+	if !strings.Contains(out, "hello") {
+		t.Errorf("output = %q, want to contain %q", out, "hello")
 	}
 }
 
 func TestRootCmdExecuteMultiline(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "multigo.yaml")
-	if err := os.WriteFile(configPath, []byte(`
+	out := runVerb(t, "multigo", `
 commands:
   multi:
     cmd: |
@@ -256,44 +225,17 @@ commands:
       echo step2
       echo step3
     description: "Run multiple commands"
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
+`, "multi")
 
-	os.Args = []string{"multigo"}
-	os.Chdir(dir)
-
-	root := RootCmd()
-
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	root.SetArgs([]string{"multi"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	w.Close()
-	var out bytes.Buffer
-	out.ReadFrom(r)
-	os.Stdout = oldStdout
-
-	output := out.String()
 	for _, want := range []string{"step1", "step2", "step3"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("output = %q, want to contain %q", output, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want to contain %q", out, want)
 		}
 	}
 }
 
 func TestRootCmdExecuteCmdsList(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "cmdsgo.yaml")
-	if err := os.WriteFile(configPath, []byte(`
+	out := runVerb(t, "cmdsgo", `
 commands:
   deploy:
     cmds:
@@ -301,44 +243,17 @@ commands:
       - echo "step 2"
       - echo "step 3"
     description: "Run multiple commands"
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
+`, "deploy")
 
-	os.Args = []string{"cmdsgo"}
-	os.Chdir(dir)
-
-	root := RootCmd()
-
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	root.SetArgs([]string{"deploy"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	w.Close()
-	var out bytes.Buffer
-	out.ReadFrom(r)
-	os.Stdout = oldStdout
-
-	output := out.String()
 	for _, want := range []string{"step 1", "step 2", "step 3"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("output = %q, want to contain %q", output, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want to contain %q", out, want)
 		}
 	}
 }
 
 func TestRootCmdExecuteCmdsMultiline(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "cmdsmulti.yaml")
-	if err := os.WriteFile(configPath, []byte(`
+	out := runVerb(t, "cmdsmulti", `
 commands:
   script:
     cmds:
@@ -346,33 +261,11 @@ commands:
         echo "line1"
         echo "line2"
     description: "Run multi-line script"
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
+`, "script")
 
-	os.Args = []string{"cmdsmulti"}
-	os.Chdir(dir)
-
-	root := RootCmd()
-
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	root.SetArgs([]string{"script"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	w.Close()
-	var out bytes.Buffer
-	out.ReadFrom(r)
-	os.Stdout = oldStdout
-
-	output := out.String()
 	for _, want := range []string{"line1", "line2"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("output = %q, want to contain %q", output, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want to contain %q", out, want)
 		}
 	}
 }
@@ -449,9 +342,13 @@ func TestBuildLong(t *testing.T) {
 }
 
 // runVerb writes configYAML to a temp <binaryName>.yaml, builds the root
-// command, runs the given args, and returns captured stdout.
+// command, runs the given args, and returns captured stdout. It sandboxes HOME
+// (so the trust store and global config live in a temp dir) and passes --trust
+// so the local config is accepted without prompting.
 func runVerb(t *testing.T, binaryName, configYAML string, args ...string) string {
 	t.Helper()
+
+	t.Setenv("HOME", t.TempDir())
 
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
@@ -476,7 +373,7 @@ func runVerb(t *testing.T, binaryName, configYAML string, args ...string) string
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	root.SetArgs(args)
+	root.SetArgs(append([]string{"--trust"}, args...))
 	execErr := root.Execute()
 
 	w.Close()
@@ -500,6 +397,116 @@ func containsLine(s, want string) bool {
 		}
 	}
 	return false
+}
+
+// trustFixture writes a local config and returns its path plus a fresh
+// (empty) trust store path.
+func trustFixture(t *testing.T) (localPath, storePath string) {
+	t.Helper()
+	dir := t.TempDir()
+	localPath = filepath.Join(dir, "ugo.yaml")
+	if err := os.WriteFile(localPath, []byte("commands:\n  build:\n    cmd: echo hi\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	storePath = filepath.Join(t.TempDir(), "trust.json")
+	return localPath, storePath
+}
+
+func gate(localPath, storePath, answer string, allow, interactive bool) (string, error) {
+	var out bytes.Buffer
+	in := bufio.NewReader(strings.NewReader(answer))
+	err := trustGate(localPath, storePath, in, &out, allow, interactive)
+	return out.String(), err
+}
+
+func TestTrustGate(t *testing.T) {
+	t.Run("no local config is allowed", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "nope.yaml")
+		storePath := filepath.Join(t.TempDir(), "trust.json")
+		if _, err := gate(missing, storePath, "", false, false); err != nil {
+			t.Errorf("expected nil for absent local config, got %v", err)
+		}
+	})
+
+	t.Run("--trust bypasses prompt and records trust", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		if _, err := gate(localPath, storePath, "", true /*allow*/, false); err != nil {
+			t.Fatalf("--trust should allow, got %v", err)
+		}
+		// A subsequent non-interactive run must now pass without --trust.
+		if _, err := gate(localPath, storePath, "", false, false); err != nil {
+			t.Errorf("config should be trusted after --trust, got %v", err)
+		}
+	})
+
+	t.Run("non-interactive untrusted is blocked", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		_, err := gate(localPath, storePath, "", false, false /*interactive*/)
+		if err == nil || !strings.Contains(err.Error(), "--trust") {
+			t.Errorf("expected a blocking error mentioning --trust, got %v", err)
+		}
+	})
+
+	t.Run("interactive yes trusts and persists", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		out, err := gate(localPath, storePath, "y\n", false, true)
+		if err != nil {
+			t.Fatalf("expected trust granted, got %v", err)
+		}
+		if !strings.Contains(out, "Trust it?") {
+			t.Errorf("expected a prompt, got %q", out)
+		}
+		if _, err := gate(localPath, storePath, "", false, false); err != nil {
+			t.Errorf("config should be trusted after yes, got %v", err)
+		}
+	})
+
+	t.Run("interactive no aborts", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		for _, answer := range []string{"n\n", "\n", "nope\n"} {
+			_, err := gate(localPath, storePath, answer, false, true)
+			if err == nil || !strings.Contains(err.Error(), "aborting") {
+				t.Errorf("answer %q: expected abort error, got %v", answer, err)
+			}
+		}
+	})
+
+	t.Run("editing a trusted config re-prompts", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		if _, err := gate(localPath, storePath, "", true, false); err != nil {
+			t.Fatalf("initial trust: %v", err)
+		}
+
+		// Modify the config: trust must be revoked (Changed), so a
+		// non-interactive run is blocked again.
+		if err := os.WriteFile(localPath, []byte("commands:\n  build:\n    cmd: echo PWNED\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gate(localPath, storePath, "", false, false); err == nil {
+			t.Error("expected a changed config to be blocked until re-trusted")
+		}
+
+		// Re-prompt should mention that it changed.
+		out, err := gate(localPath, storePath, "y\n", false, true)
+		if err != nil {
+			t.Fatalf("re-trust: %v", err)
+		}
+		if !strings.Contains(out, "changed") {
+			t.Errorf("expected 'changed' notice on re-prompt, got %q", out)
+		}
+	})
+}
+
+func TestRootCmdTrustFlag(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"trustflaggo"}
+	os.Chdir(t.TempDir())
+
+	root := RootCmd()
+	if flag := root.PersistentFlags().Lookup("trust"); flag == nil {
+		t.Fatal("expected --trust flag")
+	}
 }
 
 func TestRootCmdExecuteSingleLineQuoting(t *testing.T) {

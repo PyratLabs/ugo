@@ -25,8 +25,9 @@ go vet ./...               # vet
 - `internal/output/output.go` — colored/emoji output with `--no-color` flag support
 - `internal/output/output_test.go` — ANSI stripping verification
 - `internal/args/args.go` — argument validation (enum, glob, regex)
+- `internal/trust/trust.go` — direnv-style trust store; content-hashed gate over the local config
 
-Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args}/*_test.go`
+Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args,trust}/*_test.go`
 
 ## Working conventions
 
@@ -46,3 +47,4 @@ Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args}/*_test
 - Version comparison uses `golang.org/x/mod/semver`; `version_cmd` output is scanned for a semver pattern
 - Running a verb without required arguments (or with invalid args) prints the error then the help, then exits
 - Security model: config (global + local-from-CWD) and argument/prompt values are trusted; `cmd`/`cmds` run via `sh -c` and `${name}` values are expanded as unquoted shell text. Constrain untrusted args with `values`/`match`. Sensitive prompt values are masked in uGo's output only — they still reach the shell (visible in `ps`, and to `set -x`). See README "Security".
+- Trust gate: the local (CWD) config must be trusted before any verb or `check` executes. Trust is content-hashed (path + SHA-256) in `~/.config/<binary>/trust.json`; editing the config revokes it. `PersistentPreRunE` prompts on a TTY; `--trust` records trust without prompting (CI/CD); non-interactive + untrusted aborts. `help`/`version` are never gated. The global config is implicitly trusted.

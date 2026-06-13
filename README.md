@@ -352,7 +352,29 @@ uGo's job is to run commands you have configured, so **the configuration and the
 
 uGo reads `./<binary>.yaml` from the current directory and merges it over your global config. Running a verb — or `ugo check` — executes the `version_cmd` of each configured tool found on your `$PATH`, and runs the verb's `cmd`/`cmds` via `sh -c`. Changing into a directory and running a verb therefore runs *that directory's* configuration, the same way `make`, `npm run`, or a `./go` script would.
 
-**Only run uGo in repositories you trust.** (`ugo --help` and `ugo version` do not execute anything from the config, so they are safe to run anywhere.)
+To guard against running an unfamiliar repository's config, uGo gates the **local** config behind a trust prompt (see [Trusting a directory](#trusting-a-directory)). The global config (`~/.config/<binary>/config.yaml`) is user-owned and always trusted. `ugo --help` and `ugo version` never execute anything from the config, so they are safe to run anywhere.
+
+### Trusting a directory
+
+The first time you run a verb (or `ugo check`) in a directory with a local config, uGo asks before executing anything:
+
+```bash
+$ ugo build
+
+    ⚠️  /home/me/project/ugo.yaml is not trusted.
+    Running a verb here will execute the commands defined in this file.
+    Trust it? [y/N]:
+```
+
+Answering `y` records the config as trusted and runs it; anything else aborts without executing. Trust is **content-addressed**: uGo stores the path together with a SHA-256 of the file's contents in `~/.config/<binary>/trust.json`. If the config is later edited (e.g. a `git pull` changes it), trust is automatically revoked and you are prompted again.
+
+For non-interactive use (CI/CD), pass `--trust` to skip the prompt and record the config as trusted:
+
+```bash
+ugo --trust build
+```
+
+When no terminal is attached and `--trust` is not given, uGo refuses to run rather than executing an untrusted config silently. To revoke trust, delete the relevant entry (or the whole file) from `~/.config/<binary>/trust.json`.
 
 ### Argument and prompt values are expanded as shell text
 
