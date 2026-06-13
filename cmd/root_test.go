@@ -15,7 +15,6 @@ func TestBuildUse(t *testing.T) {
 		name      string
 		verb      string
 		arguments []config.Argument
-		prompts   []config.Prompt
 		want      string
 	}{
 		{
@@ -42,26 +41,13 @@ func TestBuildUse(t *testing.T) {
 			arguments: []config.Argument{},
 			want:      "test",
 		},
-		{
-			name:      "prompts only",
-			verb:      "login",
-			prompts:   []config.Prompt{{Name: "password", Description: "Enter password", Sensitive: true}},
-			want:      "login",
-		},
-		{
-			name:      "arguments and prompts",
-			verb:      "deploy",
-			arguments: []config.Argument{{Name: "env"}},
-			prompts:   []config.Prompt{{Name: "token", Description: "API token", Sensitive: true}},
-			want:      "deploy <env>",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildUse(tt.verb, tt.arguments, tt.prompts)
+			got := buildUse(tt.verb, tt.arguments)
 			if got != tt.want {
-				t.Errorf("buildUse(%q, %v, %v) = %q, want %q", tt.verb, tt.arguments, tt.prompts, got, tt.want)
+				t.Errorf("buildUse(%q, %v) = %q, want %q", tt.verb, tt.arguments, got, tt.want)
 			}
 		})
 	}
@@ -415,7 +401,7 @@ func TestBuildLong(t *testing.T) {
 			arguments: []config.Argument{
 				{Name: "service", Match: "[a-z][a-z0-9-]+"},
 			},
-			want: []string{"^[a-z][a-z0-9-]+$"},
+			want: []string{"^(?:[a-z][a-z0-9-]+)$"},
 		},
 		{
 			name: "no validation",
@@ -460,6 +446,105 @@ func TestBuildLong(t *testing.T) {
 		}
 	})
 	}
+}
+
+// runVerb writes configYAML to a temp <binaryName>.yaml, builds the root
+// command, runs the given args, and returns captured stdout.
+func runVerb(t *testing.T, binaryName, configYAML string, args ...string) string {
+	t.Helper()
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, binaryName+".yaml")
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	os.Args = []string{binaryName}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	root.SetArgs(args)
+	execErr := root.Execute()
+
+	w.Close()
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	os.Stdout = oldStdout
+
+	if execErr != nil {
+		t.Fatalf("Execute() error = %v", execErr)
+	}
+	return buf.String()
+}
+
+// containsLine reports whether any line of s, trimmed of surrounding
+// whitespace, equals want. Used to assert on a command's actual output
+// rather than the echoed "running" display line.
+func containsLine(s, want string) bool {
+	for line := range strings.SplitSeq(s, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRootCmdExecuteSingleLineQuoting(t *testing.T) {
+	// Regression: a single-line cmd must preserve quoted whitespace instead of
+	// collapsing it during whitespace tokenization (strings.Fields).
+	out := runVerb(t, "qgo", `
+commands:
+  spaces:
+    cmd: echo "hello   world"
+    description: "Quoted whitespace"
+`, "spaces")
+
+	if !containsLine(out, "hello   world") {
+		t.Errorf("expected an output line %q, got:\n%s", "hello   world", out)
+	}
+}
+
+func TestRootCmdExecuteSingleLineShellOperators(t *testing.T) {
+	// Regression: shell operators in a single-line cmd must be interpreted by
+	// the shell, not passed as literal arguments to the first word.
+	t.Run("&& chains", func(t *testing.T) {
+		out := runVerb(t, "andgo", `
+commands:
+  chain:
+    cmd: echo first && echo second
+    description: "Operator chain"
+`, "chain")
+
+		if !containsLine(out, "first") || !containsLine(out, "second") {
+			t.Errorf("expected output lines %q and %q, got:\n%s", "first", "second", out)
+		}
+	})
+
+	t.Run("pipes", func(t *testing.T) {
+		out := runVerb(t, "pipego", `
+commands:
+  pipe:
+    cmd: echo "hello world" | tr ' ' '_'
+    description: "Pipeline"
+`, "pipe")
+
+		if !containsLine(out, "hello_world") {
+			t.Errorf("expected an output line %q, got:\n%s", "hello_world", out)
+		}
+	})
 }
 
 func TestExpandEnv(t *testing.T) {

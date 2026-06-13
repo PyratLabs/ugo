@@ -63,6 +63,27 @@ tools:
 		}
 	})
 
+	t.Run("parses shell_options", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+shell_options: "set -euo pipefail"
+commands:
+  plan:
+    cmd: echo plan
+`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := loadConfigFile(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.ShellOptions != "set -euo pipefail" {
+			t.Errorf("ShellOptions = %q, want %q", cfg.ShellOptions, "set -euo pipefail")
+		}
+	})
+
 	t.Run("invalid yaml", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.yaml")
@@ -143,6 +164,32 @@ func TestMergeConfigs(t *testing.T) {
 		}
 		if _, ok := merged.Tools["make"]; !ok {
 			t.Error("expected tool 'make' from local")
+		}
+	})
+
+	t.Run("shell_options is preserved through merge", func(t *testing.T) {
+		tests := []struct {
+			name           string
+			global         string
+			local          string
+			wantShellOpts  string
+		}{
+			{"local only", "", "set -euo pipefail", "set -euo pipefail"},
+			{"global only", "set -e", "", "set -e"},
+			{"local overrides global", "set -e", "set -euo pipefail", "set -euo pipefail"},
+			{"neither set", "", "", ""},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				global := &Config{ShellOptions: tt.global}
+				local := &Config{ShellOptions: tt.local}
+
+				merged := mergeConfigs(global, local)
+				if merged.ShellOptions != tt.wantShellOpts {
+					t.Errorf("merged.ShellOptions = %q, want %q", merged.ShellOptions, tt.wantShellOpts)
+				}
+			})
 		}
 	})
 }

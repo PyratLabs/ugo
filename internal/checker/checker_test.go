@@ -3,6 +3,7 @@ package checker
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/PyratLabs/ugo/internal/config"
@@ -78,14 +79,7 @@ func TestCheckTools(t *testing.T) {
 		if len(issues) != 1 {
 			t.Fatalf("expected 1 issue, got %d", len(issues))
 		}
-		found := false
-		for _, e := range issues[0].Errors {
-			if e == "nonexistent-tool-xyz is not installed, download at: https://example.com/download" {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(issues[0].Errors, "nonexistent-tool-xyz is not installed, download at: https://example.com/download") {
 			t.Errorf("expected download URL in error, got: %v", issues[0].Errors)
 		}
 	})
@@ -108,6 +102,29 @@ func TestCheckTools(t *testing.T) {
 		issues := CheckTools(tools)
 		if len(issues) != 0 {
 			t.Errorf("expected no issues, got %d", len(issues))
+		}
+	})
+
+	t.Run("issues are returned in sorted, deterministic order", func(t *testing.T) {
+		// All three are missing, so each yields one issue. Map iteration in Go
+		// is randomized, so a stable result must come from explicit sorting.
+		tools := map[string]config.Tool{
+			"zzz-missing-tool": {},
+			"aaa-missing-tool": {},
+			"mmm-missing-tool": {},
+		}
+		want := []string{"aaa-missing-tool", "mmm-missing-tool", "zzz-missing-tool"}
+
+		for range 20 {
+			issues := CheckTools(tools)
+			if len(issues) != len(want) {
+				t.Fatalf("expected %d issues, got %d", len(want), len(issues))
+			}
+			for j, w := range want {
+				if issues[j].Tool != w {
+					t.Errorf("issues[%d].Tool = %q, want %q", j, issues[j].Tool, w)
+				}
+			}
 		}
 	})
 }

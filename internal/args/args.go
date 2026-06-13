@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 
 	"github.com/PyratLabs/ugo/internal/config"
 )
@@ -33,19 +34,15 @@ func Validate(arg config.Argument, value string) error {
 }
 
 func validateExclude(name string, exclude []string, actual string) error {
-	for _, v := range exclude {
-		if v == actual {
-			return fmt.Errorf("argument '%s': value %q is not allowed", name, actual)
-		}
+	if slices.Contains(exclude, actual) {
+		return fmt.Errorf("argument '%s': value %q is not allowed", name, actual)
 	}
 	return nil
 }
 
 func validateEnum(name string, values []string, actual string) error {
-	for _, v := range values {
-		if v == actual {
-			return nil
-		}
+	if slices.Contains(values, actual) {
+		return nil
 	}
 	return fmt.Errorf("argument '%s': value %q not in allowed values: %s", name, actual, values)
 }
@@ -67,7 +64,11 @@ func validateMatch(name string, pattern string, actual string) error {
 		return fmt.Errorf("argument '%s': no file matching pattern %q found for value %q", name, pattern, actual)
 	}
 
-	pattern = "^" + pattern + "$"
+	// Wrap in a non-capturing group before anchoring so the ^ and $ bind the
+	// whole pattern. Without the group, a top-level alternation like "dev|prod"
+	// would anchor as "^dev|prod$" = "(^dev)|(prod$)", letting a value such as
+	// "dev; rm -rf ~" satisfy the "^dev" branch and bypass validation.
+	pattern = "^(?:" + pattern + ")$"
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return fmt.Errorf("argument '%s': invalid regex pattern %q: %w", name, pattern, err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -116,7 +117,13 @@ func printToolStatus(tools map[string]config.Tool, issues []checker.Issue) {
 		issueMap[i.Tool] = i
 	}
 
+	names := make([]string, 0, len(tools))
 	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
 		if issue, ok := issueMap[name]; ok {
 			for _, e := range issue.Errors {
 				if strings.HasPrefix(e, "version:") {
@@ -156,7 +163,7 @@ func runToolChecks() error {
 
 func buildCommand(name string, def config.Command) *cobra.Command {
 	c := &cobra.Command{
-		Use:   buildUse(name, def.Arguments, def.Prompts),
+		Use:   buildUse(name, def.Arguments),
 		Short: def.Description,
 		Long:  buildLong(def.Arguments, def.Prompts),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -190,7 +197,7 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 						b.WriteString("(no files found)")
 					}
 				} else {
-					b.WriteString(fmt.Sprintf("^%s$", arg.Match))
+					b.WriteString(fmt.Sprintf("^(?:%s)$", arg.Match))
 				}
 			default:
 				b.WriteString("(no validation)")
@@ -217,7 +224,7 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 	return b.String()
 }
 
-func buildUse(name string, arguments []config.Argument, prompts []config.Prompt) string {
+func buildUse(name string, arguments []config.Argument) string {
 	if len(arguments) == 0 {
 		return name
 	}
@@ -264,7 +271,10 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 			}
 		}
 
-		// Prompt if no value from env var
+		// Prompt if there is still no value. Note a set-but-empty from_env_var
+		// (e.g. TOKEN="") intentionally falls through to the interactive
+		// prompt — this matches the documented "unset or empty" behavior, so
+		// an empty env var cannot be used to supply an empty answer.
 		if value == "" {
 			var err error
 			if p.Sensitive {
@@ -344,30 +354,26 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 	displayVars := output.MaskedVars(vars, sensitiveNames)
 	display := expandVars(cmdStr, displayVars)
 
+	if strings.TrimSpace(expanded) == "" {
+		output.CommandSuccess(name)
+		return nil
+	}
+
+	// Single-line and multiline cmd both run via "sh -c" so that quoting,
+	// embedded whitespace, and shell operators (&&, |, redirects) behave as
+	// written rather than being split on whitespace into argv.
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
-		if err := runShellScript(expanded, env, shellOpts); err != nil {
-			output.CommandFail(name)
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
-		}
 	} else {
-		parts := strings.Fields(expanded)
-		if len(parts) == 0 {
-			output.CommandSuccess(name)
-			return nil
-		}
-
 		output.CommandRunning(name, display)
-		if err := runCommand(expanded, env); err != nil {
-			output.CommandFail(name)
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
+	}
+
+	if err := runShellScript(expanded, env, shellOpts); err != nil {
+		output.CommandFail(name)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
 		}
+		os.Exit(1)
 	}
 
 	output.CommandSuccess(name)
@@ -394,19 +400,6 @@ func expandEnv(env map[string]string, vars map[string]string) map[string]string 
 		expanded[k] = expandVars(v, vars)
 	}
 	return expanded
-}
-
-func runCommand(cmdStr string, env map[string]string) error {
-	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
-		return nil
-	}
-	command := exec.Command(parts[0], parts[1:]...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.Stdin = os.Stdin
-	applyEnv(command, env)
-	return command.Run()
 }
 
 func runShellScript(script string, env map[string]string, shellOpts string) error {
