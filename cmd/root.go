@@ -3,8 +3,11 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,6 +15,7 @@ import (
 	"github.com/PyratLabs/ugo/internal/checker"
 	"github.com/PyratLabs/ugo/internal/config"
 	"github.com/PyratLabs/ugo/internal/output"
+	"github.com/PyratLabs/ugo/internal/trust"
 	"golang.org/x/term"
 )
 
@@ -21,6 +25,7 @@ var (
 	binaryName string
 	appCfg     *config.Config
 	noColor    bool
+	trustFlag  bool
 )
 
 func RootCmd() *cobra.Command {
@@ -49,7 +54,18 @@ Local config overrides global config for the same verb names.`,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			output.SetNoColor(noColor)
-			if cmd.Name() == "check" || cmd.Name() == "help" || cmd.Name() == "version" {
+			// help and version never execute anything from the config.
+			if cmd.Name() == "help" || cmd.Name() == "version" {
+				return nil
+			}
+			// Everything else (verbs and check) can run config-defined
+			// commands, so the local config must be trusted first.
+			if err := enforceTrust(); err != nil {
+				output.CheckFail(err.Error())
+				os.Exit(1)
+			}
+			// check does its own tool checking in its Run.
+			if cmd.Name() == "check" {
 				return nil
 			}
 			return runToolChecks()
@@ -57,6 +73,7 @@ Local config overrides global config for the same verb names.`,
 	}
 
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
+	root.PersistentFlags().BoolVar(&trustFlag, "trust", false, "trust this directory's config without prompting (for CI/CD)")
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		return fmt.Errorf("unknown flag: %s\nRun '%s help' for usage", err.Error(), binaryName)
 	})
@@ -116,7 +133,13 @@ func printToolStatus(tools map[string]config.Tool, issues []checker.Issue) {
 		issueMap[i.Tool] = i
 	}
 
+	names := make([]string, 0, len(tools))
 	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
 		if issue, ok := issueMap[name]; ok {
 			for _, e := range issue.Errors {
 				if strings.HasPrefix(e, "version:") {
@@ -154,9 +177,91 @@ func runToolChecks() error {
 	return nil
 }
 
+// enforceTrust gates execution of config-defined commands behind the trust
+// store, prompting on os.Stdin or honoring --trust. It is thin glue over
+// trustGate so the latter stays free of globals and easy to test.
+func enforceTrust() error {
+	_, localPath := config.ConfigPaths(binaryName)
+	storePath, err := trust.DefaultStorePath(binaryName)
+	if err != nil {
+		return err
+	}
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	return trustGate(localPath, storePath, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+}
+
+// trustGate decides whether the local config may be executed. It returns nil to
+// allow execution or an error explaining why it is blocked. allow corresponds
+// to --trust; interactive reports whether prompting is possible.
+func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
+	// Only the working-directory config is gated; the global config is
+	// user-owned and implicitly trusted.
+	if !fileExists(localPath) {
+		return nil
+	}
+
+	absPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return err
+	}
+	hash, err := trust.HashFile(localPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", localPath, err)
+	}
+
+	store, err := trust.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("loading trust store: %w", err)
+	}
+
+	status := store.Status(absPath, hash)
+	if status == trust.Trusted {
+		return nil
+	}
+
+	// --trust: skip the prompt and record trust (best-effort, so a read-only
+	// home in CI/CD doesn't fail the run).
+	if allow {
+		if err := store.Trust(absPath, hash); err != nil {
+			fmt.Fprintf(out, "    warning: could not record trust for %s: %v\n", absPath, err)
+		}
+		return nil
+	}
+
+	if !interactive {
+		return fmt.Errorf("%s is not trusted; re-run with --trust to allow it (e.g. in CI/CD)", localPath)
+	}
+
+	fmt.Fprintln(out)
+	if status == trust.Changed {
+		fmt.Fprintf(out, "    ⚠️  %s has changed since it was last trusted.\n", absPath)
+	} else {
+		fmt.Fprintf(out, "    ⚠️  %s is not trusted.\n", absPath)
+	}
+	fmt.Fprintln(out, "    Running a verb here will execute the commands defined in this file.")
+	fmt.Fprint(out, "    Trust it? [y/N]: ")
+
+	line, _ := in.ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		if err := store.Trust(absPath, hash); err != nil {
+			return fmt.Errorf("recording trust: %w", err)
+		}
+		fmt.Fprintf(out, "    trusted %s\n\n", absPath)
+		return nil
+	default:
+		return fmt.Errorf("%s not trusted; aborting", localPath)
+	}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func buildCommand(name string, def config.Command) *cobra.Command {
 	c := &cobra.Command{
-		Use:   buildUse(name, def.Arguments, def.Prompts),
+		Use:   buildUse(name, def.Arguments),
 		Short: def.Description,
 		Long:  buildLong(def.Arguments, def.Prompts),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -190,7 +295,7 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 						b.WriteString("(no files found)")
 					}
 				} else {
-					b.WriteString(fmt.Sprintf("^%s$", arg.Match))
+					b.WriteString(fmt.Sprintf("^(?:%s)$", arg.Match))
 				}
 			default:
 				b.WriteString("(no validation)")
@@ -217,7 +322,7 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 	return b.String()
 }
 
-func buildUse(name string, arguments []config.Argument, prompts []config.Prompt) string {
+func buildUse(name string, arguments []config.Argument) string {
 	if len(arguments) == 0 {
 		return name
 	}
@@ -264,7 +369,10 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 			}
 		}
 
-		// Prompt if no value from env var
+		// Prompt if there is still no value. Note a set-but-empty from_env_var
+		// (e.g. TOKEN="") intentionally falls through to the interactive
+		// prompt — this matches the documented "unset or empty" behavior, so
+		// an empty env var cannot be used to supply an empty answer.
 		if value == "" {
 			var err error
 			if p.Sensitive {
@@ -344,30 +452,26 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 	displayVars := output.MaskedVars(vars, sensitiveNames)
 	display := expandVars(cmdStr, displayVars)
 
+	if strings.TrimSpace(expanded) == "" {
+		output.CommandSuccess(name)
+		return nil
+	}
+
+	// Single-line and multiline cmd both run via "sh -c" so that quoting,
+	// embedded whitespace, and shell operators (&&, |, redirects) behave as
+	// written rather than being split on whitespace into argv.
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
-		if err := runShellScript(expanded, env, shellOpts); err != nil {
-			output.CommandFail(name)
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
-		}
 	} else {
-		parts := strings.Fields(expanded)
-		if len(parts) == 0 {
-			output.CommandSuccess(name)
-			return nil
-		}
-
 		output.CommandRunning(name, display)
-		if err := runCommand(expanded, env); err != nil {
-			output.CommandFail(name)
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
+	}
+
+	if err := runShellScript(expanded, env, shellOpts); err != nil {
+		output.CommandFail(name)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
 		}
+		os.Exit(1)
 	}
 
 	output.CommandSuccess(name)
@@ -394,19 +498,6 @@ func expandEnv(env map[string]string, vars map[string]string) map[string]string 
 		expanded[k] = expandVars(v, vars)
 	}
 	return expanded
-}
-
-func runCommand(cmdStr string, env map[string]string) error {
-	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
-		return nil
-	}
-	command := exec.Command(parts[0], parts[1:]...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.Stdin = os.Stdin
-	applyEnv(command, env)
-	return command.Run()
 }
 
 func runShellScript(script string, env map[string]string, shellOpts string) error {

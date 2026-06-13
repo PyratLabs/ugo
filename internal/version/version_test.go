@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExtractVersion(t *testing.T) {
@@ -121,5 +122,43 @@ func TestCheck(t *testing.T) {
 				t.Errorf("Check() version = %q, want %q", gotVer, tt.wantVer)
 			}
 		})
+	}
+}
+
+func TestCheckReadsStderr(t *testing.T) {
+	// Many tools (e.g. "java -version") print their version to stderr.
+	tmp := t.TempDir()
+	scriptPath := filepath.Join(tmp, "stderr-version")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho \"stderr-tool v2.3.4\" >&2\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Check("stderr-tool", scriptPath, "2.0.0", "3.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "v2.3.4" {
+		t.Errorf("Check() version = %q, want %q", got, "v2.3.4")
+	}
+}
+
+func TestCheckTimeout(t *testing.T) {
+	tmp := t.TempDir()
+	scriptPath := filepath.Join(tmp, "slow-version")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 5\necho v1.0.0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := versionCmdTimeout
+	versionCmdTimeout = 100 * time.Millisecond
+	defer func() { versionCmdTimeout = orig }()
+
+	start := time.Now()
+	_, err := Check("slow-tool", scriptPath, "", "")
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Check() took %s, expected it to abort well before the script's 5s sleep", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("Check() error = %v, want a timeout error", err)
 	}
 }

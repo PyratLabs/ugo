@@ -85,7 +85,7 @@ uGo loads configuration from two locations and merges them (local overrides glob
 
 ### Shell options
 
-Set `shell_options` to prepend shell flags to all commands that run via `sh -c` (multiline `cmd` and all `cmds` items):
+Set `shell_options` to prepend shell flags to all commands that run via `sh -c` (every `cmd` — single-line and multiline — and all `cmds` items):
 
 ```yaml
 shell_options: "set -euo pipefail"
@@ -119,7 +119,7 @@ tools:
 ```yaml
 commands:
   <verb>:
-    cmd: "<single command with ${arg} templates>"      # string: runs directly (single-line) or as shell script (multi-line)
+    cmd: "<single command with ${arg} templates>"      # string: runs via "sh -c", so quoting, pipes, and && work
     cmds:                                              # list: each item runs via sh -c (supports shell features)
       - "echo ${arg}"
       - |
@@ -216,7 +216,16 @@ Arguments support three validation modes:
 
 Glob vs regex is auto-detected: if the pattern contains `*` or `?` it's treated as a file glob.
 
-### Multiline commands
+### Command execution
+
+Every `cmd` runs via `sh -c`, so shell features — quoting, embedded whitespace, pipes (`|`), and operators (`&&`, `||`, redirects) — behave as written:
+
+```yaml
+commands:
+  plan:
+    cmd: terraform workspace select "${workspace}" && terraform plan
+    description: "Select a workspace and plan"
+```
 
 **`cmd` with multiline** — runs the entire block as a shell script via `sh -c`:
 
@@ -334,6 +343,58 @@ $ ugo check
 
   ❌ Tool checks failed
 ```
+
+## Security
+
+uGo's job is to run commands you have configured, so **the configuration and the argument values you pass are trusted inputs**. A few properties are worth understanding:
+
+### Configuration is loaded from the working directory
+
+uGo reads `./<binary>.yaml` from the current directory and merges it over your global config. Running a verb — or `ugo check` — executes the `version_cmd` of each configured tool found on your `$PATH`, and runs the verb's `cmd`/`cmds` via `sh -c`. Changing into a directory and running a verb therefore runs *that directory's* configuration, the same way `make`, `npm run`, or a `./go` script would.
+
+To guard against running an unfamiliar repository's config, uGo gates the **local** config behind a trust prompt (see [Trusting a directory](#trusting-a-directory)). The global config (`~/.config/<binary>/config.yaml`) is user-owned and always trusted. `ugo --help` and `ugo version` never execute anything from the config, so they are safe to run anywhere.
+
+### Trusting a directory
+
+The first time you run a verb (or `ugo check`) in a directory with a local config, uGo asks before executing anything:
+
+```bash
+$ ugo build
+
+    ⚠️  /home/me/project/ugo.yaml is not trusted.
+    Running a verb here will execute the commands defined in this file.
+    Trust it? [y/N]:
+```
+
+Answering `y` records the config as trusted and runs it; anything else aborts without executing. Trust is **content-addressed**: uGo stores the path together with a SHA-256 of the file's contents in `~/.config/<binary>/trust.json`. If the config is later edited (e.g. a `git pull` changes it), trust is automatically revoked and you are prompted again.
+
+For non-interactive use (CI/CD), pass `--trust` to skip the prompt and record the config as trusted:
+
+```bash
+ugo --trust build
+```
+
+When no terminal is attached and `--trust` is not given, uGo refuses to run rather than executing an untrusted config silently. To revoke trust, delete the relevant entry (or the whole file) from `~/.config/<binary>/trust.json`.
+
+### Argument and prompt values are expanded as shell text
+
+`${name}` placeholders are substituted into the command string *before* it is handed to `sh -c`, and the values are **not** shell-quoted. A value like `foo; rm -rf ~` placed in an unconstrained argument runs as written.
+
+If a verb can receive values from an untrusted or external source (CI variables, webhooks, etc.), constrain those arguments:
+
+- `values: [...]` — accept only an explicit set (exact match), or
+- `match: "<regex-or-glob>"` — validate against a fully-anchored regex, or an on-disk glob.
+
+Arguments with neither are accepted verbatim. Unresolved `${name}` placeholders (a typo, or a deliberate `$HOME`) are passed through and expanded by the shell.
+
+### Secrets
+
+`sensitive: true` masks a prompt's value **in uGo's own output only** — the `🚀` line shows `********`. The real value is still expanded into the command, which means:
+
+- it is passed to `sh -c`, so it can be visible in the process list (`ps`, `/proc`) to other local users while the command runs; and
+- enabling shell tracing through `shell_options` (e.g. `set -x`) echoes the expanded command — including the secret — to stderr.
+
+Prefer passing secrets through the environment — reference a `${prompt}` from an `env:` value and use `"$VAR"` in the command, rather than interpolating the secret directly into `cmd` — and avoid `set -x` when handling sensitive prompts.
 
 ## Colored Output
 

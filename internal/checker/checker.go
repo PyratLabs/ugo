@@ -3,6 +3,7 @@ package checker
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/PyratLabs/ugo/internal/config"
@@ -19,7 +20,16 @@ type Issue struct {
 func CheckTools(tools map[string]config.Tool) []Issue {
 	var issues []Issue
 
-	for name, tool := range tools {
+	// Iterate in sorted order so results (and the printed check output) are
+	// deterministic rather than following Go's randomized map iteration.
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		tool := tools[name]
 		var errs []string
 
 		if _, err := exec.LookPath(name); err != nil {

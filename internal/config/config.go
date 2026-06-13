@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,7 @@ func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
 		return nil // Ignore read errors, env will be empty
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil // Ignore parse errors
 	}
@@ -136,13 +137,13 @@ func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
 		return nil
 	}
 
-	commands, ok := commandsRaw.(map[string]interface{})
+	commands, ok := commandsRaw.(map[string]any)
 	if !ok {
 		return nil
 	}
 
 	for name, cmdRaw := range commands {
-		cmdMap, ok := cmdRaw.(map[string]interface{})
+		cmdMap, ok := cmdRaw.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -152,7 +153,7 @@ func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
 			continue
 		}
 
-		envMap, ok := envRaw.(map[string]interface{})
+		envMap, ok := envRaw.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -179,20 +180,16 @@ func mergeConfigs(global, local *Config) *Config {
 		Tools:    make(map[string]Tool),
 	}
 
-	for name, cmd := range global.Commands {
-		merged.Commands[name] = cmd
-	}
+	// Local entries override global ones with the same key.
+	maps.Copy(merged.Commands, global.Commands)
+	maps.Copy(merged.Commands, local.Commands)
+	maps.Copy(merged.Tools, global.Tools)
+	maps.Copy(merged.Tools, local.Tools)
 
-	for name, cmd := range local.Commands {
-		merged.Commands[name] = cmd
-	}
-
-	for name, tool := range global.Tools {
-		merged.Tools[name] = tool
-	}
-
-	for name, tool := range local.Tools {
-		merged.Tools[name] = tool
+	// Local shell_options overrides global; otherwise inherit global.
+	merged.ShellOptions = global.ShellOptions
+	if local.ShellOptions != "" {
+		merged.ShellOptions = local.ShellOptions
 	}
 
 	return merged

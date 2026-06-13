@@ -338,6 +338,34 @@ func TestRegexFullMatch(t *testing.T) {
 	}
 }
 
+func TestRegexAlternationIsFullyAnchored(t *testing.T) {
+	// A top-level alternation must anchor as a whole, i.e. "^(?:dev|prod)$",
+	// not "^dev|prod$" (= "^dev" OR "prod$"). Otherwise a value like
+	// "dev; rm -rf ~" satisfies the "^dev" branch and slips past validation
+	// straight into the shell.
+	arg := config.Argument{
+		Name:  "env",
+		Match: "dev|prod",
+	}
+
+	for _, valid := range []string{"dev", "prod"} {
+		if err := Validate(arg, valid); err != nil {
+			t.Errorf("Validate(%q) = %v, want nil", valid, err)
+		}
+	}
+
+	for _, bad := range []string{
+		"dev; rm -rf ~", // prefix-matches the "dev" branch
+		"xprod",         // suffix-matches the "prod" branch
+		"development",
+		"prod-extra",
+	} {
+		if err := Validate(arg, bad); err == nil {
+			t.Errorf("Validate(%q) = nil, want error (alternation must be fully anchored)", bad)
+		}
+	}
+}
+
 func TestGlobMatches(t *testing.T) {
 	t.Run("file glob returns basenames without ext", func(t *testing.T) {
 		dir := t.TempDir()
