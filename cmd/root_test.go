@@ -332,12 +332,12 @@ func TestBuildLong(t *testing.T) {
 				}
 				return
 			}
-		for _, w := range tt.want {
-			if !strings.Contains(got, w) {
-				t.Errorf("buildLong() = %q, want to contain %q", got, w)
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("buildLong() = %q, want to contain %q", got, w)
+				}
 			}
-		}
-	})
+		})
 	}
 }
 
@@ -497,6 +497,93 @@ func TestTrustGate(t *testing.T) {
 	})
 }
 
+// TestReservedNamesNotShadowable is a regression test for a trust-gate bypass:
+// a config command named "version" or "help" (both trust-exempt built-ins)
+// must not be registered from config, so it can never execute untrusted shell
+// by impersonating a built-in. The built-in commands must remain in place.
+func TestReservedNamesNotShadowable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "resvgo.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+commands:
+  version:
+    cmd: echo PWNED
+  help:
+    cmd: echo PWNED
+  check:
+    cmd: echo PWNED
+  deploy:
+    cmd: echo deploy
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+	os.Args = []string{"resvgo"}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+
+	// A config verb carries annRunsToolChecks; the built-in check and help do
+	// not. So no reserved-named command may carry that annotation — otherwise
+	// the config shadowed a built-in with an executable verb.
+	deployFound := false
+	for _, c := range root.Commands() {
+		if reservedNames[c.Name()] && c.Annotations[annRunsToolChecks] == "true" {
+			t.Errorf("reserved name %q was registered as a config verb", c.Name())
+		}
+		if c.Name() == "deploy" {
+			deployFound = true
+			if c.Annotations[annExecutesConfig] != "true" {
+				t.Error("config verb 'deploy' must be trust-gated")
+			}
+		}
+	}
+
+	// Non-reserved verbs must still be registered.
+	if !deployFound {
+		t.Error("expected non-reserved verb 'deploy' to be registered")
+	}
+
+	// The built-in version command must still resolve and must not execute
+	// config-defined shell.
+	verCmd, _, err := root.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("built-in version command not found: %v", err)
+	}
+	if verCmd.Annotations[annExecutesConfig] == "true" {
+		t.Error("version command must not execute config-defined shell")
+	}
+}
+
+// TestConfigVerbsAreTrustGated asserts every config-derived verb (and check)
+// is annotated so the PersistentPreRunE trust gate applies to it.
+func TestConfigVerbsAreTrustGated(t *testing.T) {
+	verb := buildCommand("deploy", config.Command{Cmd: "echo hi"})
+	if verb.Annotations[annExecutesConfig] != "true" {
+		t.Error("config verb must be marked as executing config-defined shell")
+	}
+	if verb.Annotations[annRunsToolChecks] != "true" {
+		t.Error("config verb must be marked as running tool checks")
+	}
+
+	chk := checkCmd()
+	if chk.Annotations[annExecutesConfig] != "true" {
+		t.Error("check must be trust-gated (it runs config-defined version commands)")
+	}
+	if chk.Annotations[annRunsToolChecks] == "true" {
+		t.Error("check does its own tool checking and must not be marked for pre-flight tool checks")
+	}
+}
+
 func TestRootCmdTrustFlag(t *testing.T) {
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
@@ -563,9 +650,9 @@ func TestExpandEnv(t *testing.T) {
 
 	t.Run("expands all env values", func(t *testing.T) {
 		env := map[string]string{
-			"DEPLOY_ENV":  "${env}",
-			"API_KEY":     "${api_key}",
-			"USER":        "${username}",
+			"DEPLOY_ENV": "${env}",
+			"API_KEY":    "${api_key}",
+			"USER":       "${username}",
 		}
 		got := expandEnv(env, vars)
 		if got["DEPLOY_ENV"] != "prod" {
@@ -612,8 +699,8 @@ func TestExpandEnv(t *testing.T) {
 
 	t.Run("mixed static and dynamic values", func(t *testing.T) {
 		env := map[string]string{
-			"ENV":      "${env}",
-			"STATIC":   "static-value",
+			"ENV":    "${env}",
+			"STATIC": "static-value",
 		}
 		got := expandEnv(env, vars)
 		if got["ENV"] != "prod" {
