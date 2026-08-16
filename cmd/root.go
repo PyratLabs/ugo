@@ -10,16 +10,36 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/PyratLabs/ugo/internal/args"
 	"github.com/PyratLabs/ugo/internal/checker"
 	"github.com/PyratLabs/ugo/internal/config"
 	"github.com/PyratLabs/ugo/internal/output"
 	"github.com/PyratLabs/ugo/internal/trust"
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 var version = "dev"
+
+// Annotation keys used to mark which commands may execute config-defined
+// shell. Trust and tool checks are gated on these annotations rather than on
+// the command name: names come from the (untrusted) config, so gating on the
+// name would let a config command called "help" or "version" impersonate a
+// built-in and skip the trust prompt entirely.
+const (
+	annExecutesConfig = "ugo/executes-config"
+	annRunsToolChecks = "ugo/runs-tool-checks"
+)
+
+// reservedNames are built-in command names that a config must not redefine.
+// Allowing a config to shadow them creates ambiguous dispatch and, for the
+// trust-exempt built-ins, a path to run untrusted code.
+var reservedNames = map[string]bool{
+	"help":       true,
+	"version":    true,
+	"check":      true,
+	"completion": true,
+}
 
 var (
 	binaryName string
@@ -54,18 +74,21 @@ Local config overrides global config for the same verb names.`,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			output.SetNoColor(noColor)
-			// help and version never execute anything from the config.
-			if cmd.Name() == "help" || cmd.Name() == "version" {
+			// Only commands that can execute config-defined shell are gated,
+			// identified by annotation rather than by name. Built-ins such as
+			// help and version carry no annotation and run freely; a config
+			// command cannot opt out of the gate by choosing their name.
+			if cmd.Annotations[annExecutesConfig] != "true" {
 				return nil
 			}
-			// Everything else (verbs and check) can run config-defined
-			// commands, so the local config must be trusted first.
+			// These commands run config-defined commands, so the local config
+			// must be trusted first.
 			if err := enforceTrust(); err != nil {
 				output.CheckFail(err.Error())
 				os.Exit(1)
 			}
 			// check does its own tool checking in its Run.
-			if cmd.Name() == "check" {
+			if cmd.Annotations[annRunsToolChecks] != "true" {
 				return nil
 			}
 			return runToolChecks()
@@ -78,8 +101,14 @@ Local config overrides global config for the same verb names.`,
 		return fmt.Errorf("unknown flag: %s\nRun '%s help' for usage", err.Error(), binaryName)
 	})
 
-	// Build subcommands from config
+	// Build subcommands from config. Names that collide with built-in
+	// commands are skipped: they would create ambiguous dispatch and, for the
+	// trust-exempt built-ins, could otherwise be used to run untrusted code.
 	for name, cmdDef := range appCfg.Commands {
+		if reservedNames[name] {
+			fmt.Fprintf(os.Stderr, "warning: ignoring config command %q: name is reserved\n", name)
+			continue
+		}
 		root.AddCommand(buildCommand(name, cmdDef))
 	}
 
@@ -93,6 +122,9 @@ func checkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check",
 		Short: "Check required tool dependencies",
+		// check runs config-defined version commands, so it must be trusted.
+		// It performs its own tool checking, so it omits annRunsToolChecks.
+		Annotations: map[string]string{annExecutesConfig: "true"},
 		Run: func(cmd *cobra.Command, args []string) {
 			output.SetNoColor(noColor)
 			if len(appCfg.Tools) == 0 {
@@ -264,6 +296,12 @@ func buildCommand(name string, def config.Command) *cobra.Command {
 		Use:   buildUse(name, def.Arguments),
 		Short: def.Description,
 		Long:  buildLong(def.Arguments, def.Prompts),
+		// Config verbs execute config-defined shell and run pre-flight tool
+		// checks, so both trust and tool checks are enforced before RunE.
+		Annotations: map[string]string{
+			annExecutesConfig: "true",
+			annRunsToolChecks: "true",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return executeCommand(cmd, name, def, args)
 		},
