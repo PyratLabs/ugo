@@ -27,6 +27,13 @@ type Argument struct {
 	Exclude []string `mapstructure:"exclude"`
 }
 
+// Group defines a named section for organising verbs in help output.
+// Declaration order in YAML controls display order.
+type Group struct {
+	Name        string `mapstructure:"name"`
+	Description string `mapstructure:"description"`
+}
+
 // Prompt defines an interactive prompt that collects user input at runtime.
 type Prompt struct {
 	Name        string `mapstructure:"name"`
@@ -42,6 +49,7 @@ type Command struct {
 	Cmds        []string          `mapstructure:"cmds"`
 	Env         map[string]string `mapstructure:"env"`
 	Description string            `mapstructure:"description"`
+	Group       string            `mapstructure:"group"`
 	Arguments   []Argument        `mapstructure:"arguments"`
 	Prompts     []Prompt          `mapstructure:"prompts"`
 }
@@ -50,6 +58,7 @@ type Command struct {
 type Config struct {
 	Commands      map[string]Command `mapstructure:"commands"`
 	Tools         map[string]Tool    `mapstructure:"tools"`
+	Groups        []Group            `mapstructure:"groups"`
 	ShellOptions  string             `mapstructure:"shell_options"`   // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
@@ -186,12 +195,45 @@ func mergeConfigs(global, local *Config) *Config {
 	maps.Copy(merged.Tools, global.Tools)
 	maps.Copy(merged.Tools, local.Tools)
 
+	merged.Groups = mergeGroups(global.Groups, local.Groups)
+
 	// Local shell_options overrides global; otherwise inherit global.
 	merged.ShellOptions = global.ShellOptions
 	if local.ShellOptions != "" {
 		merged.ShellOptions = local.ShellOptions
 	}
 
+	return merged
+}
+
+// mergeGroups deduplicates groups by name: global groups keep their declared
+// order, local-only groups are appended after in their declared order, and a
+// local group with the same name overrides the global one in place.
+func mergeGroups(global, local []Group) []Group {
+	localByName := make(map[string]Group, len(local))
+	for _, g := range local {
+		localByName[g.Name] = g
+	}
+
+	var merged []Group
+	seen := make(map[string]bool, len(global)+len(local))
+	for _, g := range global {
+		if seen[g.Name] {
+			continue
+		}
+		seen[g.Name] = true
+		if lg, ok := localByName[g.Name]; ok {
+			g = lg
+		}
+		merged = append(merged, g)
+	}
+	for _, g := range local {
+		if seen[g.Name] {
+			continue
+		}
+		seen[g.Name] = true
+		merged = append(merged, g)
+	}
 	return merged
 }
 

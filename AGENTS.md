@@ -34,7 +34,8 @@ Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args,trust}/
 - Verbs are defined in YAML, not hardcoded. Adding a new verb means editing config, not code.
 - Config schema:
   - `shell_options: "set -euo pipefail"` — prepended to all shell scripts (every `cmd` and all `cmds` items)
-  - `commands.<verb>.{cmd, cmds, env, description, arguments[]}` — `cmd` is a string, `cmds` is a list of strings, `env` is a map of environment variables; arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex), optional `exclude` (list of disallowed values)
+  - `commands.<verb>.{cmd, cmds, env, description, group, arguments[]}` — `cmd` is a string, `cmds` is a list of strings, `env` is a map of environment variables, `group` names a help-output section; arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex), optional `exclude` (list of disallowed values)
+  - `groups[]` — optional list of `{name, description}` defining help-output sections and their order; verbs opt in via `group: <name>`. Undeclared-but-referenced groups are auto-created; once any verb is grouped, ungrouped verbs go under "Other Commands" and built-ins under "Built-in Commands" (see `applyGroups` in `cmd/root.go`)
   - `tools.<binary>.{min_version, max_version, version_cmd, download_url}` — pre-flight checks run before every verb
 - Arguments after the verb are mapped positionally to `arguments` entries and expanded into `${name}` placeholders in `cmd` or `cmds`
 - `cmd` runs via `sh -c` (single-line and multiline block scalars alike), so quoting, pipes, and shell operators work; multiline blocks run as a shell script
