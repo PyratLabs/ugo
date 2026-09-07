@@ -129,6 +129,7 @@ commands:
       MY_VAR: "value"
       TOKEN: "${api_token}"
     description: "<short help text>"
+    group: <group-name>            # optional: help output section (see Groups)
     arguments:                     # positional argument definitions (optional)
       - name: <arg1>
         values: [val1, val2]       # optional: restrict to enum values
@@ -138,6 +139,50 @@ commands:
         description: "Enter your API token"
         sensitive: true            # optional: masks input and display
 ```
+
+#### Groups
+
+Groups organise verbs into named sections in the help output. Assign a verb to a group with `group:`; optionally declare groups at the top level to control section titles and display order:
+
+```yaml
+groups:
+  - name: infra
+    description: "Infrastructure Commands"   # section title in help output
+  - name: dev
+    description: "Development Commands"
+
+commands:
+  plan:
+    group: infra
+    cmd: ansible-playbook --check ...
+  lint:
+    group: dev
+    cmd: go test ./...
+  whoami:                          # ungrouped verbs still work
+    cmd: whoami
+```
+
+```bash
+$ ugo --help
+...
+Infrastructure Commands:
+  plan        Run an ansible playbook in check mode.
+
+Development Commands:
+  lint        Run test suite
+
+Other Commands:
+  whoami      Show current user and host
+
+Built-in Commands:
+  check       Check required tool dependencies
+  help        Help about any command
+  version     Print the version number
+```
+
+The `groups:` block is optional — referencing an undeclared group auto-creates one titled with its name, appended alphabetically after the declared groups. Declared groups appear in YAML order; groups no verb references are hidden. Once any verb is grouped, ungrouped verbs are listed under "Other Commands" and `check`/`help`/`version` under "Built-in Commands". Configs without groups keep the flat "Available Commands" list.
+
+When global and local configs both declare groups, they merge by name: global groups keep their order, local-only groups are appended, and a local group overrides the description of a same-named global one.
 
 #### Prompts
 

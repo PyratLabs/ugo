@@ -84,6 +84,41 @@ commands:
 		}
 	})
 
+	t.Run("parses groups and command group", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+groups:
+  - name: infra
+    description: "Infrastructure"
+  - name: dev
+commands:
+  plan:
+    cmd: echo plan
+    group: infra
+`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := loadConfigFile(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(cfg.Groups) != 2 {
+			t.Fatalf("len(Groups) = %d, want 2", len(cfg.Groups))
+		}
+		if cfg.Groups[0].Name != "infra" || cfg.Groups[0].Description != "Infrastructure" {
+			t.Errorf("Groups[0] = %+v, want {infra Infrastructure}", cfg.Groups[0])
+		}
+		if cfg.Groups[1].Name != "dev" || cfg.Groups[1].Description != "" {
+			t.Errorf("Groups[1] = %+v, want {dev }", cfg.Groups[1])
+		}
+		if cfg.Commands["plan"].Group != "infra" {
+			t.Errorf("plan.group = %q, want %q", cfg.Commands["plan"].Group, "infra")
+		}
+	})
+
 	t.Run("invalid yaml", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.yaml")
@@ -190,6 +225,59 @@ func TestMergeConfigs(t *testing.T) {
 					t.Errorf("merged.ShellOptions = %q, want %q", merged.ShellOptions, tt.wantShellOpts)
 				}
 			})
+		}
+	})
+}
+
+func TestMergeGroups(t *testing.T) {
+	t.Run("both empty", func(t *testing.T) {
+		if got := mergeGroups(nil, nil); len(got) != 0 {
+			t.Errorf("mergeGroups(nil, nil) = %v, want empty", got)
+		}
+	})
+
+	t.Run("global order kept, local-only appended", func(t *testing.T) {
+		global := []Group{{Name: "infra"}, {Name: "dev"}}
+		local := []Group{{Name: "release"}, {Name: "docs"}}
+
+		got := mergeGroups(global, local)
+		want := []string{"infra", "dev", "release", "docs"}
+		if len(got) != len(want) {
+			t.Fatalf("len = %d, want %d", len(got), len(want))
+		}
+		for i, name := range want {
+			if got[i].Name != name {
+				t.Errorf("got[%d].Name = %q, want %q", i, got[i].Name, name)
+			}
+		}
+	})
+
+	t.Run("local overrides same-name group in place", func(t *testing.T) {
+		global := []Group{
+			{Name: "infra", Description: "Global Infra"},
+			{Name: "dev", Description: "Development"},
+		}
+		local := []Group{{Name: "infra", Description: "Local Infra"}}
+
+		got := mergeGroups(global, local)
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		if got[0].Name != "infra" || got[0].Description != "Local Infra" {
+			t.Errorf("got[0] = %+v, want infra with local description", got[0])
+		}
+		if got[1].Name != "dev" || got[1].Description != "Development" {
+			t.Errorf("got[1] = %+v, want unchanged dev group", got[1])
+		}
+	})
+
+	t.Run("duplicate names deduplicated", func(t *testing.T) {
+		global := []Group{{Name: "infra"}, {Name: "infra"}}
+		local := []Group{{Name: "dev"}, {Name: "dev"}}
+
+		got := mergeGroups(global, local)
+		if len(got) != 2 {
+			t.Errorf("len = %d, want 2 (deduplicated), got %v", len(got), got)
 		}
 	})
 }

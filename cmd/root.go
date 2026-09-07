@@ -104,18 +104,100 @@ Local config overrides global config for the same verb names.`,
 	// Build subcommands from config. Names that collide with built-in
 	// commands are skipped: they would create ambiguous dispatch and, for the
 	// trust-exempt built-ins, could otherwise be used to run untrusted code.
+	verbs := make(map[string]*cobra.Command, len(appCfg.Commands))
 	for name, cmdDef := range appCfg.Commands {
 		if reservedNames[name] {
 			fmt.Fprintf(os.Stderr, "warning: ignoring config command %q: name is reserved\n", name)
 			continue
 		}
-		root.AddCommand(buildCommand(name, cmdDef))
+		verbs[name] = buildCommand(name, cmdDef)
+		root.AddCommand(verbs[name])
 	}
 
-	root.AddCommand(checkCmd())
-	root.AddCommand(versionCmd())
+	check := checkCmd()
+	ver := versionCmd()
+	root.AddCommand(check)
+	root.AddCommand(ver)
+
+	applyGroups(root, verbs, appCfg, check, ver)
 
 	return root
+}
+
+// Reserved group IDs for commands the config doesn't assign a group. Prefixed
+// so they can't collide with a user-declared group name.
+const (
+	otherGroupID   = "__other__"
+	builtinGroupID = "__builtin__"
+)
+
+// applyGroups wires config-defined command groups into cobra's help output.
+// When no verb references a group, help output is unchanged. Otherwise every
+// command is assigned a group: ungrouped verbs go under "Other Commands" and
+// built-ins under "Built-in Commands", so cobra's default "Additional
+// Commands" bucket (which would mix the two) never appears.
+func applyGroups(root *cobra.Command, verbs map[string]*cobra.Command, cfg *config.Config, builtins ...*cobra.Command) {
+	used := make(map[string]bool)
+	for name, def := range cfg.Commands {
+		if def.Group != "" && verbs[name] != nil {
+			used[def.Group] = true
+		}
+	}
+	if len(used) == 0 {
+		return
+	}
+
+	// Declared groups keep their YAML order and use description as the help
+	// section title. Groups without commands are skipped so help never shows
+	// an empty heading.
+	addGroup := func(id, title string) {
+		if !root.ContainsGroup(id) {
+			root.AddGroup(&cobra.Group{ID: id, Title: title + ":"})
+		}
+	}
+	for _, g := range cfg.Groups {
+		if !used[g.Name] {
+			continue
+		}
+		title := g.Description
+		if title == "" {
+			title = g.Name
+		}
+		addGroup(g.Name, title)
+	}
+
+	// Groups referenced by a verb but not declared are auto-created, appended
+	// alphabetically after the declared ones. cobra panics at Execute() on a
+	// GroupID with no registered group, so every used name must be added.
+	extras := make([]string, 0, len(used))
+	for name := range used {
+		if !root.ContainsGroup(name) {
+			extras = append(extras, name)
+		}
+	}
+	sort.Strings(extras)
+	for _, name := range extras {
+		addGroup(name, name)
+	}
+
+	hasUngrouped := false
+	for name, c := range verbs {
+		if group := cfg.Commands[name].Group; group != "" {
+			c.GroupID = group
+		} else {
+			c.GroupID = otherGroupID
+			hasUngrouped = true
+		}
+	}
+	if hasUngrouped {
+		addGroup(otherGroupID, "Other Commands")
+	}
+
+	addGroup(builtinGroupID, "Built-in Commands")
+	for _, c := range builtins {
+		c.GroupID = builtinGroupID
+	}
+	root.SetHelpCommandGroupID(builtinGroupID)
 }
 
 func checkCmd() *cobra.Command {

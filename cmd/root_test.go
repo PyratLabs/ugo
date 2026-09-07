@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PyratLabs/ugo/internal/config"
+	"github.com/spf13/cobra"
 )
 
 func TestBuildUse(t *testing.T) {
@@ -145,6 +146,166 @@ func TestRootCmdNoColorFlag(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("no-color default = %q, want %q", flag.DefValue, "false")
+	}
+}
+
+// buildRoot writes configYAML to a temp <binaryName>.yaml, chdirs there, and
+// returns the built root command. Cleanup restores os.Args and the working
+// directory; HOME is sandboxed so no real global config leaks in.
+func buildRoot(t *testing.T, binaryName, configYAML string) *cobra.Command {
+	t.Helper()
+
+	t.Setenv("HOME", t.TempDir())
+
+	oldArgs := os.Args
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		_ = os.Chdir(oldWd)
+	})
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, binaryName+".yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	os.Args = []string{binaryName}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	return RootCmd()
+}
+
+// usageOf renders the root command's usage text.
+func usageOf(t *testing.T, root *cobra.Command) string {
+	t.Helper()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	if err := root.Usage(); err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	return buf.String()
+}
+
+func TestRootCmdGroups(t *testing.T) {
+	root := buildRoot(t, "groupgo", `
+groups:
+  - name: infra
+    description: "Infrastructure Commands"
+  - name: dev
+    description: "Development Commands"
+  - name: unused
+    description: "Unused Group"
+
+commands:
+  plan:
+    group: infra
+    cmd: echo plan
+    description: "Plan"
+  lint:
+    group: dev
+    cmd: echo lint
+    description: "Lint"
+  mystery:
+    group: experimental
+    cmd: echo mystery
+    description: "Mystery"
+  whoami:
+    cmd: echo whoami
+    description: "Whoami"
+`)
+
+	groupIDs := map[string]string{}
+	for _, c := range root.Commands() {
+		groupIDs[c.Name()] = c.GroupID
+	}
+	wantIDs := map[string]string{
+		"plan":    "infra",
+		"lint":    "dev",
+		"mystery": "experimental", // auto-created from reference
+		"whoami":  otherGroupID,
+		"check":   builtinGroupID,
+		"version": builtinGroupID,
+	}
+	for name, want := range wantIDs {
+		if groupIDs[name] != want {
+			t.Errorf("%s.GroupID = %q, want %q", name, groupIDs[name], want)
+		}
+	}
+
+	out := usageOf(t, root)
+
+	// Sections appear in order: declared groups (YAML order), auto-created,
+	// then Other and Built-in.
+	sections := []string{
+		"Infrastructure Commands:",
+		"Development Commands:",
+		"experimental:",
+		"Other Commands:",
+		"Built-in Commands:",
+	}
+	last := -1
+	for _, s := range sections {
+		idx := strings.Index(out, s)
+		if idx == -1 {
+			t.Errorf("usage missing section %q:\n%s", s, out)
+			continue
+		}
+		if idx < last {
+			t.Errorf("section %q out of order:\n%s", s, out)
+		}
+		last = idx
+	}
+
+	// Groups with no commands are hidden, and nothing falls into cobra's
+	// mixed default bucket.
+	for _, absent := range []string{"Unused Group", "Additional Commands:"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("usage should not contain %q:\n%s", absent, out)
+		}
+	}
+}
+
+func TestRootCmdNoGroupsUnchanged(t *testing.T) {
+	root := buildRoot(t, "nogroupgo", `
+commands:
+  lint:
+    cmd: echo lint
+    description: "Lint"
+`)
+
+	for _, c := range root.Commands() {
+		if c.GroupID != "" {
+			t.Errorf("%s.GroupID = %q, want empty when no groups configured", c.Name(), c.GroupID)
+		}
+	}
+
+	out := usageOf(t, root)
+	if !strings.Contains(out, "Available Commands:") {
+		t.Errorf("usage should keep the flat command list:\n%s", out)
+	}
+	for _, absent := range []string{"Other Commands:", "Built-in Commands:"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("usage should not contain %q:\n%s", absent, out)
+		}
+	}
+}
+
+func TestRootCmdExecuteGroupedVerb(t *testing.T) {
+	// Regression: cobra panics at Execute() if a command's GroupID has no
+	// registered group, so referenced-but-undeclared groups must be
+	// auto-registered.
+	out := runVerb(t, "groupexec", `
+commands:
+  hello:
+    group: greetings
+    cmd: echo grouped-hello
+    description: "Say hello"
+`, "hello")
+
+	if !strings.Contains(out, "grouped-hello") {
+		t.Errorf("output = %q, want to contain %q", out, "grouped-hello")
 	}
 }
 
