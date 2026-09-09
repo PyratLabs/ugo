@@ -146,7 +146,7 @@ commands:
 
 #### Platforms
 
-A command can provide OS- and architecture-specific variants. `os` and `arch` match Go's [`runtime.GOOS` and `runtime.GOARCH`](https://go.dev/doc/install/source#environment) values (`darwin`, `linux`, `windows` / `amd64`, `arm64`, ...); an omitted field matches anything. The first matching entry wins, in YAML order. Only `cmd`/`cmds` vary per platform — a matching variant replaces both; `env`, `arguments`, and `prompts` stay shared:
+A command can provide OS- and architecture-specific variants. `os` and `arch` match Go's [`runtime.GOOS` and `runtime.GOARCH`](https://go.dev/doc/install/source#environment) values (`darwin`, `linux`, `windows` / `amd64`, `arm64`, ...) case-insensitively; an omitted field matches anything, and a value that isn't a known GOOS/GOARCH prints a warning so a typo can't silently hide a verb. The first matching entry wins, in YAML order. Only `cmd`/`cmds` vary per platform — a matching variant replaces both; `env`, `arguments`, and `prompts` stay shared:
 
 ```yaml
 commands:

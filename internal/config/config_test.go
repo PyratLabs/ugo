@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -186,7 +189,7 @@ func TestResolvePlatforms(t *testing.T) {
 		"empty-no-platforms": {Description: "no-op placeholder"},
 	}
 
-	resolvePlatforms(cmds, "darwin", "arm64")
+	resolvePlatforms(cmds, "darwin", "arm64", io.Discard)
 
 	want := map[string]string{
 		"exact":               "mac-arm",
@@ -211,6 +214,43 @@ func TestResolvePlatforms(t *testing.T) {
 	v := cmds["variant-replaces-cmds"]
 	if v.Cmd != "new" || v.Cmds != nil {
 		t.Errorf("variant-replaces-cmds = {Cmd:%q Cmds:%v}, want {Cmd:\"new\" Cmds:[]}", v.Cmd, v.Cmds)
+	}
+}
+
+func TestResolvePlatformsCaseInsensitive(t *testing.T) {
+	cmds := map[string]Command{
+		"build": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "Darwin", Arch: "ARM64", Cmd: "mac"},
+		}},
+	}
+
+	resolvePlatforms(cmds, "darwin", "arm64", io.Discard)
+
+	if cmds["build"].Cmd != "mac" {
+		t.Errorf("build.Cmd = %q, want %q (os/arch should match case-insensitively)", cmds["build"].Cmd, "mac")
+	}
+}
+
+func TestResolvePlatformsWarnsOnUnknownValues(t *testing.T) {
+	var buf bytes.Buffer
+	cmds := map[string]Command{
+		"build": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "linx", Cmd: "x"},
+			{OS: "linux", Arch: "amd65", Cmd: "y"},
+		}},
+	}
+
+	resolvePlatforms(cmds, "linux", "amd64", &buf)
+
+	out := buf.String()
+	if !strings.Contains(out, `"linx"`) {
+		t.Errorf("warnings = %q, want unknown os %q flagged", out, "linx")
+	}
+	if !strings.Contains(out, `"amd65"`) {
+		t.Errorf("warnings = %q, want unknown arch %q flagged", out, "amd65")
+	}
+	if cmds["build"].Cmd != "fallback" {
+		t.Errorf("build.Cmd = %q, want fallback (typo'd entries must not match)", cmds["build"].Cmd)
 	}
 }
 

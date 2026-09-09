@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -64,17 +65,41 @@ type Command struct {
 	Platforms   []Platform        `yaml:"platforms"`
 }
 
+// Valid GOOS/GOARCH values (from "go tool dist list"), used only to warn on
+// typos — an unknown value silently matches nothing, hiding the verb with no
+// explanation otherwise.
+var knownOS = map[string]bool{
+	"aix": true, "android": true, "darwin": true, "dragonfly": true,
+	"freebsd": true, "illumos": true, "ios": true, "js": true, "linux": true,
+	"netbsd": true, "openbsd": true, "plan9": true, "solaris": true,
+	"wasip1": true, "windows": true,
+}
+
+var knownArch = map[string]bool{
+	"386": true, "amd64": true, "arm": true, "arm64": true, "loong64": true,
+	"mips": true, "mipsle": true, "mips64": true, "mips64le": true,
+	"ppc64": true, "ppc64le": true, "riscv64": true, "s390x": true,
+	"wasm": true,
+}
+
 // resolvePlatforms rewrites each command to its first matching platform
 // variant, keeping the top-level cmd/cmds as fallback. Commands with no
-// matching variant and no fallback are removed.
-func resolvePlatforms(commands map[string]Command, goos, goarch string) {
+// matching variant and no fallback are removed. os/arch values match
+// runtime.GOOS/GOARCH case-insensitively; unrecognised values are reported
+// on warn.
+func resolvePlatforms(commands map[string]Command, goos, goarch string, warn io.Writer) {
 	for name, cmd := range commands {
 		matched := false
 		for _, p := range cmd.Platforms {
-			if (p.OS == "" || p.OS == goos) && (p.Arch == "" || p.Arch == goarch) {
+			if p.OS != "" && !knownOS[strings.ToLower(p.OS)] {
+				fmt.Fprintf(warn, "warning: command %q: unknown os %q in platforms\n", name, p.OS)
+			}
+			if p.Arch != "" && !knownArch[strings.ToLower(p.Arch)] {
+				fmt.Fprintf(warn, "warning: command %q: unknown arch %q in platforms\n", name, p.Arch)
+			}
+			if !matched && (p.OS == "" || strings.EqualFold(p.OS, goos)) && (p.Arch == "" || strings.EqualFold(p.Arch, goarch)) {
 				cmd.Cmd, cmd.Cmds = p.Cmd, p.Cmds
 				matched = true
-				break
 			}
 		}
 		if !matched && len(cmd.Platforms) > 0 && cmd.Cmd == "" && len(cmd.Cmds) == 0 {
@@ -114,7 +139,7 @@ func Load(binaryName string) (*Config, []byte, error) {
 	}
 
 	merged := mergeConfigs(global, local)
-	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH)
+	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH, os.Stderr)
 	return merged, localRaw, nil
 }
 
