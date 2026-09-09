@@ -91,7 +91,9 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("glob pass - basename", func(t *testing.T) {
+	t.Run("glob rejects basename with extension", func(t *testing.T) {
+		// Validation accepts exactly what help displays (basename without
+		// extension) plus the matched path — nothing in between.
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), nil, 0644); err != nil {
 			t.Fatal(err)
@@ -100,8 +102,28 @@ func TestValidate(t *testing.T) {
 			Name:  "file",
 			Match: filepath.Join(dir, "*.yaml"),
 		}
-		if err := Validate(arg, "config.yaml"); err != nil {
-			t.Errorf("Validate(basename) = %v, want nil", err)
+		if err := Validate(arg, "config.yaml"); err == nil {
+			t.Error("Validate(basename with ext) = nil, want error")
+		}
+	})
+
+	t.Run("glob rejects shared filename for directory glob", func(t *testing.T) {
+		// For environments/*/inventory.yaml the meaningful names are the
+		// directory names; the shared filename must not validate.
+		dir := t.TempDir()
+		envDir := filepath.Join(dir, "dev")
+		if err := os.Mkdir(envDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "inventory.yaml"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		arg := config.Argument{
+			Name:  "environment",
+			Match: filepath.Join(dir, "*/inventory.yaml"),
+		}
+		if err := Validate(arg, "inventory.yaml"); err == nil {
+			t.Error("Validate(shared filename) = nil, want error")
 		}
 	})
 

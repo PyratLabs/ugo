@@ -14,7 +14,7 @@ func TestCheckInstalled(t *testing.T) {
 		// Version constraints must not trigger version command execution:
 		// this entry would produce an issue if the (unrunnable) version
 		// command were invoked or the impossible minimum were enforced.
-		"sh": {MinVersion: "99.0.0", VersionCmd: "no-such-version-cmd --version"},
+		"sh":                           {MinVersion: "99.0.0", VersionCmd: "no-such-version-cmd --version"},
 		"definitely-not-installed-xyz": {DownloadURL: "https://example.com/dl"},
 	}
 

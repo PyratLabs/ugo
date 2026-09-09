@@ -279,7 +279,7 @@ Arguments support three validation modes:
 | Mode | Config | Behavior |
 |------|--------|----------|
 | **Enum** | `values: [dev, staging, prod]` | Value must be in the list |
-| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts full path, basename, basename without extension, or directory name |
+| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts the matched path, or exactly the name help displays (directory name for directory globs, basename without extension otherwise) |
 | **Regex** | `match: "[a-z]+"` | Full-string regex match (auto-anchored) |
 | **Exclude** | `exclude: [default]` | Disallowed values (hidden from help output) |
 

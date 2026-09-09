@@ -53,13 +53,11 @@ func validateMatch(name string, pattern string, actual string) error {
 		if err != nil {
 			return fmt.Errorf("argument '%s': invalid glob pattern %q: %w", name, pattern, err)
 		}
-		for _, m := range matches {
-			if m == actual || filepath.Base(m) == actual || stripExt(filepath.Base(m)) == actual {
-				return nil
-			}
-			if dirMatch := filepath.Base(filepath.Dir(m)); dirMatch == actual {
-				return nil
-			}
+		// Accept the matched path itself, or the display name shown in help
+		// (directory name for directory globs, basename without extension
+		// otherwise) — validation and help must agree on what a value means.
+		if slices.Contains(matches, actual) || slices.Contains(GlobMatches(pattern, nil), actual) {
+			return nil
 		}
 		return fmt.Errorf("argument '%s': no file matching pattern %q found for value %q", name, pattern, actual)
 	}
