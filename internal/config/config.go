@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -42,6 +43,15 @@ type Prompt struct {
 	FromEnvVar  string `mapstructure:"from_env_var"`
 }
 
+// Platform defines an OS/arch-specific command variant. OS and Arch match
+// runtime.GOOS and runtime.GOARCH; an empty field matches anything.
+type Platform struct {
+	OS   string   `mapstructure:"os"`
+	Arch string   `mapstructure:"arch"`
+	Cmd  string   `mapstructure:"cmd"`
+	Cmds []string `mapstructure:"cmds"`
+}
+
 // Command defines a single verb's configuration
 type Command struct {
 	Name        string            `mapstructure:"name"`
@@ -52,6 +62,28 @@ type Command struct {
 	Group       string            `mapstructure:"group"`
 	Arguments   []Argument        `mapstructure:"arguments"`
 	Prompts     []Prompt          `mapstructure:"prompts"`
+	Platforms   []Platform        `mapstructure:"platforms"`
+}
+
+// resolvePlatforms rewrites each command to its first matching platform
+// variant, keeping the top-level cmd/cmds as fallback. Commands with no
+// matching variant and no fallback are removed.
+func resolvePlatforms(commands map[string]Command, goos, goarch string) {
+	for name, cmd := range commands {
+		matched := false
+		for _, p := range cmd.Platforms {
+			if (p.OS == "" || p.OS == goos) && (p.Arch == "" || p.Arch == goarch) {
+				cmd.Cmd, cmd.Cmds = p.Cmd, p.Cmds
+				matched = true
+				break
+			}
+		}
+		if !matched && len(cmd.Platforms) > 0 && cmd.Cmd == "" && len(cmd.Cmds) == 0 {
+			delete(commands, name)
+			continue
+		}
+		commands[name] = cmd
+	}
 }
 
 // Config represents the full YAML configuration
@@ -76,6 +108,7 @@ func Load(binaryName string) (*Config, error) {
 	}
 
 	merged := mergeConfigs(global, local)
+	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH)
 	return merged, nil
 }
 

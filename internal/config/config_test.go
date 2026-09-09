@@ -133,6 +133,93 @@ commands:
 	})
 }
 
+func TestResolvePlatforms(t *testing.T) {
+	cmds := map[string]Command{
+		"exact": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "darwin", Arch: "arm64", Cmd: "mac-arm"},
+		}},
+		"os-wildcard-arch": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "darwin", Cmd: "mac-any"},
+		}},
+		"first-match-wins": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "darwin", Cmd: "first"},
+			{OS: "darwin", Arch: "arm64", Cmd: "second"},
+		}},
+		"no-match-falls-back": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "windows", Cmd: "win"},
+		}},
+		"no-match-no-fallback-dropped": {Platforms: []Platform{
+			{OS: "windows", Cmd: "win"},
+		}},
+		"variant-replaces-cmds": {Cmds: []string{"old-a", "old-b"}, Platforms: []Platform{
+			{OS: "darwin", Cmd: "new"},
+		}},
+		"empty-no-platforms": {Description: "no-op placeholder"},
+	}
+
+	resolvePlatforms(cmds, "darwin", "arm64")
+
+	want := map[string]string{
+		"exact":               "mac-arm",
+		"os-wildcard-arch":    "mac-any",
+		"first-match-wins":    "first",
+		"no-match-falls-back": "fallback",
+	}
+	for name, wantCmd := range want {
+		if got := cmds[name].Cmd; got != wantCmd {
+			t.Errorf("%s.Cmd = %q, want %q", name, got, wantCmd)
+		}
+	}
+
+	if _, ok := cmds["no-match-no-fallback-dropped"]; ok {
+		t.Error("expected command with no match and no fallback to be dropped")
+	}
+
+	if _, ok := cmds["empty-no-platforms"]; !ok {
+		t.Error("expected empty command without platforms to be kept (no-op is legal)")
+	}
+
+	v := cmds["variant-replaces-cmds"]
+	if v.Cmd != "new" || v.Cmds != nil {
+		t.Errorf("variant-replaces-cmds = {Cmd:%q Cmds:%v}, want {Cmd:\"new\" Cmds:[]}", v.Cmd, v.Cmds)
+	}
+}
+
+func TestLoadConfigFileParsesPlatforms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+commands:
+  build:
+    cmd: make build
+    platforms:
+      - os: darwin
+        arch: arm64
+        cmd: make build-mac
+      - os: windows
+        cmds:
+          - ./build.bat
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfigFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p := cfg.Commands["build"].Platforms
+	if len(p) != 2 {
+		t.Fatalf("len(Platforms) = %d, want 2", len(p))
+	}
+	if p[0].OS != "darwin" || p[0].Arch != "arm64" || p[0].Cmd != "make build-mac" {
+		t.Errorf("Platforms[0] = %+v, want {darwin arm64 make build-mac}", p[0])
+	}
+	if p[1].OS != "windows" || len(p[1].Cmds) != 1 || p[1].Cmds[0] != "./build.bat" {
+		t.Errorf("Platforms[1] = %+v, want {windows [./build.bat]}", p[1])
+	}
+}
+
 func TestMergeConfigs(t *testing.T) {
 	t.Run("empty configs", func(t *testing.T) {
 		global := &Config{
