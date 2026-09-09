@@ -230,22 +230,22 @@ commands:
 |-------|-------------|
 | `name` | Template variable name (used as `${name}` in commands) |
 | `description` | Question shown to the user at the prompt |
-| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output; the real value is passed to the command |
+| `sensitive` | If `true`, input is hidden during entry and the value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores) |
 | `from_env_var` | If set, the prompt is skipped when this environment variable is already set; its value is used directly. Falls through to interactive prompt when unset or empty |
 
-Running the above command will prompt for the token, mask it on screen, and expand both `${manifest}` and `${api_token}` in the command:
+Running the above command will prompt for the token, leave `${api_token}` for the shell to expand from the environment, and expand `${manifest}` as text:
 
 ```bash
 $ ugo deploy deployment.yaml
 Enter API token:         # input is hidden
-🚀 deploy: kubectl apply -f deployment.yaml --token ********
+🚀 deploy: kubectl apply -f deployment.yaml --token ${api_token}
 ```
 
 With `from_env_var`, if the environment variable is set, no prompt appears:
 
 ```bash
 $ API_TOKEN=sk-abc123 ugo deploy deployment.yaml
-🚀 deploy: kubectl apply -f deployment.yaml --token ********
+🚀 deploy: kubectl apply -f deployment.yaml --token ${api_token}
 ```
 
 The help output shows the env var fallback:
@@ -447,7 +447,7 @@ When no terminal is attached and `--trust` is not given, uGo refuses to run rath
 
 ### Argument and prompt values are expanded as shell text
 
-`${name}` placeholders are substituted into the command string *before* it is handed to `sh -c`, and the values are **not** shell-quoted. A value like `foo; rm -rf ~` placed in an unconstrained argument runs as written.
+`${name}` placeholders are substituted into the command string *before* it is handed to `sh -c`, and the values are **not** shell-quoted. A value like `foo; rm -rf ~` placed in an unconstrained argument runs as written. (Sensitive prompt values are the exception — they travel via the environment instead; see [Secrets](#secrets).)
 
 If a verb can receive values from an untrusted or external source (CI variables, webhooks, etc.), constrain those arguments:
 
@@ -458,12 +458,14 @@ Arguments with neither are accepted verbatim. Unresolved `${name}` placeholders 
 
 ### Secrets
 
-`sensitive: true` masks a prompt's value **in uGo's own output only** — the `🚀` line shows `********`. The real value is still expanded into the command, which means:
+`sensitive: true` values are never expanded into the command text. The script handed to `sh -c` is visible in the process list (`ps`, `/proc/<pid>/cmdline`) to other local users while it runs, so uGo instead injects the value into the command's environment (readable only by the same user) and leaves `${name}` in the script for the shell to expand.
 
-- it is passed to `sh -c`, so it can be visible in the process list (`ps`, `/proc`) to other local users while the command runs; and
-- enabling shell tracing through `shell_options` (e.g. `set -x`) echoes the expanded command — including the secret — to stderr.
+Two caveats remain:
 
-Prefer passing secrets through the environment — reference a `${prompt}` from an `env:` value and use `"$VAR"` in the command, rather than interpolating the secret directly into `cmd` — and avoid `set -x` when handling sensitive prompts.
+- shell tracing through `shell_options` (e.g. `set -x`) echoes commands *after* the shell expands them — including the secret — to stderr; avoid it for verbs with sensitive prompts.
+- because the shell performs the expansion, a `${name}` inside single quotes (where the shell does not expand) stays literal. Non-sensitive prompts and arguments are still expanded as text by uGo, as before.
+
+An explicit `env:` key with the same name as a sensitive prompt takes precedence over the injected value.
 
 ## Colored Output
 

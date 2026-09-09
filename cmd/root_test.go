@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -345,6 +346,55 @@ func TestUnknownFlagErrorNotDoubled(t *testing.T) {
 	}
 	if got := strings.Count(err.Error(), "unknown flag:"); got != 1 {
 		t.Errorf("error %q contains %d %q prefixes, want exactly 1", err.Error(), got, "unknown flag:")
+	}
+}
+
+func TestSensitivePromptInjectedAsEnv(t *testing.T) {
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	out := runVerb(t, "secretenv", `
+commands:
+  reveal:
+    cmds:
+      - 'printenv secret || echo NOT_IN_ENV'
+    description: "Print the secret from the environment"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if !containsLine(out, "hunter2") {
+		t.Errorf("output = %q, want sensitive value available as child env var 'secret'", out)
+	}
+}
+
+func TestSensitivePromptNotInArgv(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc/<pid>/cmdline")
+	}
+
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	// ${$} is the shell's own pid; its cmdline holds the "sh -c <script>"
+	// argv, which is world-readable while the command runs.
+	out := runVerb(t, "secretargv", `
+commands:
+  reveal:
+    cmds:
+      - 'grep -q "hun""ter2" "/proc/${$}/cmdline" && echo LEAKED || echo CLEAN; echo "value: ${secret}"'
+    description: "Check the secret is not in the shell argv"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if containsLine(out, "LEAKED") || !containsLine(out, "CLEAN") {
+		t.Errorf("output = %q, sensitive value was expanded into the sh -c argv", out)
+	}
+	if !containsLine(out, "value: hunter2") {
+		t.Errorf("output = %q, want ${secret} still usable in command text via shell expansion", out)
 	}
 }
 

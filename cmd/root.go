@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -473,7 +474,7 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	}
 
 	vars := args.ArgMap(def.Arguments, values)
-	sensitiveNames := make(map[string]bool)
+	secretEnv := make(map[string]string)
 
 	// Collect interactive prompt values
 	for _, p := range def.Prompts {
@@ -483,9 +484,6 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 		if p.FromEnvVar != "" {
 			if envVal, ok := os.LookupEnv(p.FromEnvVar); ok {
 				value = envVal
-				if p.Sensitive {
-					sensitiveNames[p.Name] = true
-				}
 			}
 		}
 
@@ -496,7 +494,6 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 		if value == "" {
 			var err error
 			if p.Sensitive {
-				sensitiveNames[p.Name] = true
 				value, err = readSensitiveInput(p.Description)
 			} else {
 				value, err = readInput(p.Description)
@@ -507,18 +504,34 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 			}
 		}
 
-		vars[p.Name] = value
+		// Sensitive values never enter the command text: the script becomes
+		// the argv of "sh -c", which is world-readable in /proc while it
+		// runs. They ride in the child environment instead, and the ${name}
+		// reference is left literal for the shell to expand.
+		if p.Sensitive {
+			secretEnv[p.Name] = value
+		} else {
+			vars[p.Name] = value
+		}
 	}
 
-	// Expand env values against argument and prompt vars
-	expandedEnv := expandEnv(def.Env, vars)
+	// env: values may reference sensitive prompts — the environment is only
+	// readable by the same user, unlike argv, so real values are safe here.
+	allVars := make(map[string]string, len(vars)+len(secretEnv))
+	maps.Copy(allVars, vars)
+	maps.Copy(allVars, secretEnv)
+	expandedEnv := expandEnv(def.Env, allVars)
+
+	childEnv := secretEnv
+	maps.Copy(childEnv, expandedEnv) // an explicit env: key wins over an injected prompt
+
 	shellOpts := appCfg.ShellOptions
 
 	if len(def.Cmds) > 0 {
-		return executeCmdsList(name, def.Cmds, vars, expandedEnv, shellOpts, sensitiveNames)
+		return executeCmdsList(name, def.Cmds, vars, childEnv, shellOpts)
 	}
 
-	return executeCmdString(name, def.Cmd, vars, expandedEnv, shellOpts, sensitiveNames)
+	return executeCmdString(name, def.Cmd, vars, childEnv, shellOpts)
 }
 
 func readInput(description string) (string, error) {
@@ -541,17 +554,14 @@ func readSensitiveInput(description string) (string, error) {
 	return string(bytepw), nil
 }
 
-func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
-	displayVars := output.MaskedVars(vars, sensitiveNames)
-
+func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string) error {
 	for i, cmdStr := range cmdsList {
 		expanded := expandVars(cmdStr, vars)
-		display := expandVars(cmdStr, displayVars)
 
 		if len(cmdsList) > 1 {
-			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), display)
+			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), expanded)
 		} else {
-			output.CommandRunning(name, display)
+			output.CommandRunning(name, expanded)
 		}
 
 		if err := runShellScript(expanded, env, shellOpts); err != nil {
@@ -567,10 +577,8 @@ func executeCmdsList(name string, cmdsList []string, vars map[string]string, env
 	return nil
 }
 
-func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
+func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string) error {
 	expanded := expandVars(cmdStr, vars)
-	displayVars := output.MaskedVars(vars, sensitiveNames)
-	display := expandVars(cmdStr, displayVars)
 
 	if strings.TrimSpace(expanded) == "" {
 		output.CommandSuccess(name)
@@ -583,7 +591,7 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
 	} else {
-		output.CommandRunning(name, display)
+		output.CommandRunning(name, expanded)
 	}
 
 	if err := runShellScript(expanded, env, shellOpts); err != nil {
