@@ -138,7 +138,31 @@ commands:
       - name: api_token
         description: "Enter your API token"
         sensitive: true            # optional: masks input and display
+    platforms:                     # OS/arch-specific variants (optional, see Platforms)
+      - os: darwin
+        arch: arm64
+        cmd: "<command for this platform>"
 ```
+
+#### Platforms
+
+A command can provide OS- and architecture-specific variants. `os` and `arch` match Go's [`runtime.GOOS` and `runtime.GOARCH`](https://go.dev/doc/install/source#environment) values (`darwin`, `linux`, `windows` / `amd64`, `arm64`, ...); an omitted field matches anything. The first matching entry wins, in YAML order. Only `cmd`/`cmds` vary per platform — a matching variant replaces both; `env`, `arguments`, and `prompts` stay shared:
+
+```yaml
+commands:
+  build:
+    description: "Build the project"
+    cmd: make build                # fallback when no platform entry matches
+    platforms:
+      - os: darwin
+        arch: arm64
+        cmd: make build-darwin-arm64
+      - os: windows                # any arch
+        cmds:
+          - ./build.bat
+```
+
+If no entry matches and there is no top-level `cmd`/`cmds` fallback, the verb is unavailable on that platform: it is hidden from help and cannot run.
 
 #### Groups
 
