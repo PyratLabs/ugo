@@ -10,7 +10,7 @@ import (
 
 func TestLoadConfigFile(t *testing.T) {
 	t.Run("missing file returns empty config", func(t *testing.T) {
-		cfg, err := loadConfigFile("/nonexistent/path/config.yaml")
+		cfg, _, err := loadConfigFile("/nonexistent/path/config.yaml")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -40,7 +40,7 @@ tools:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -77,7 +77,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -102,7 +102,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -134,7 +134,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -155,7 +155,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		_, err := loadConfigFile(path)
+		_, _, err := loadConfigFile(path)
 		if err == nil {
 			t.Error("expected error for invalid yaml")
 		}
@@ -232,7 +232,7 @@ commands:
 		t.Fatal(err)
 	}
 
-	cfg, err := loadConfigFile(path)
+	cfg, _, err := loadConfigFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

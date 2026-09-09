@@ -93,58 +93,56 @@ type Config struct {
 	ShellOptions string             `yaml:"shell_options"` // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
-// Load merges global and local configs. Local overrides global.
-// binaryName is used to locate both config locations.
-func Load(binaryName string) (*Config, error) {
-	global, err := loadGlobalConfig(binaryName)
+// Load merges global and local configs. Local overrides global. It also
+// returns the local config's raw bytes (nil when absent) so callers can
+// trust-check exactly the content that was parsed, not whatever is on disk
+// by the time the check runs. binaryName is used to locate both configs.
+func Load(binaryName string) (*Config, []byte, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("loading global config: %w", err)
+		return nil, nil, fmt.Errorf("getting home directory: %w", err)
 	}
 
-	local, err := loadLocalConfig(binaryName)
+	global, _, err := loadConfigFile(filepath.Join(home, ".config", binaryName, "config.yaml"))
 	if err != nil {
-		return nil, fmt.Errorf("loading local config: %w", err)
+		return nil, nil, fmt.Errorf("loading global config: %w", err)
+	}
+
+	local, localRaw, err := loadConfigFile(filepath.Join(".", binaryName+".yaml"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading local config: %w", err)
 	}
 
 	merged := mergeConfigs(global, local)
 	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH)
-	return merged, nil
+	return merged, localRaw, nil
 }
 
-func loadGlobalConfig(binaryName string) (*Config, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("getting home directory: %w", err)
-	}
-
-	configPath := filepath.Join(home, ".config", binaryName, "config.yaml")
-	return loadConfigFile(configPath)
-}
-
-func loadLocalConfig(binaryName string) (*Config, error) {
-	configPath := filepath.Join(".", binaryName+".yaml")
-	return loadConfigFile(configPath)
-}
-
-func loadConfigFile(path string) (*Config, error) {
-	cfg := &Config{
+// loadConfigFile parses the config at path. raw is the exact bytes that were
+// parsed, and is nil if and only if the file does not exist — the trust gate
+// relies on that distinction, so an existing-but-empty file stays non-nil.
+func loadConfigFile(path string) (cfg *Config, raw []byte, err error) {
+	cfg = &Config{
 		Commands: make(map[string]Command),
 		Tools:    make(map[string]Tool),
 	}
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, nil
+		return cfg, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return cfg, nil
+	if data == nil {
+		data = []byte{}
+	}
+	return cfg, data, nil
 }
 
 func mergeConfigs(global, local *Config) *Config {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PyratLabs/ugo/internal/config"
+	"github.com/PyratLabs/ugo/internal/trust"
 	"github.com/spf13/cobra"
 )
 
@@ -686,10 +687,49 @@ func trustFixture(t *testing.T) (localPath, storePath string) {
 }
 
 func gate(localPath, storePath, answer string, allow, interactive bool) (string, error) {
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		raw = nil
+	}
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader(answer))
-	err := trustGate(localPath, storePath, in, &out, allow, interactive)
+	err = trustGate(localPath, storePath, raw, in, &out, allow, interactive)
 	return out.String(), err
+}
+
+func TestTrustGateHashesLoadedBytes(t *testing.T) {
+	localPath, storePath := trustFixture(t)
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The file changes between config load and the trust prompt (TOCTOU):
+	// the recorded hash must be of the bytes that were parsed, not of the
+	// file as it is now — trusting unseen content would pre-approve it for
+	// the next run.
+	swapped := []byte("commands:\n  evil:\n    cmd: echo pwned\n")
+	if err := os.WriteFile(localPath, swapped, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	in := bufio.NewReader(strings.NewReader("y\n"))
+	if err := trustGate(localPath, storePath, raw, in, &out, false, true); err != nil {
+		t.Fatalf("trustGate: %v", err)
+	}
+
+	store, err := trust.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, _ := filepath.Abs(localPath)
+	if store.Status(abs, trust.HashBytes(raw)) != trust.Trusted {
+		t.Error("expected the loaded bytes' hash to be recorded as trusted")
+	}
+	if store.Status(abs, trust.HashBytes(swapped)) == trust.Trusted {
+		t.Error("swapped file content must not be pre-trusted")
+	}
 }
 
 func TestTrustGate(t *testing.T) {

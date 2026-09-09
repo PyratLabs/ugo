@@ -48,6 +48,7 @@ var reservedNames = map[string]bool{
 var (
 	binaryName string
 	appCfg     *config.Config
+	localRaw   []byte // raw bytes of the local config as parsed; nil when absent
 	noColor    bool
 	trustFlag  bool
 )
@@ -56,7 +57,7 @@ func RootCmd() *cobra.Command {
 	binaryName = config.BinaryName()
 
 	var err error
-	appCfg, err = config.Load(binaryName)
+	appCfg, localRaw, err = config.Load(binaryName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
@@ -305,16 +306,18 @@ func enforceTrust() error {
 		return err
 	}
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	return trustGate(localPath, storePath, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+	return trustGate(localPath, storePath, localRaw, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
 }
 
-// trustGate decides whether the local config may be executed. It returns nil to
-// allow execution or an error explaining why it is blocked. allow corresponds
-// to --trust; interactive reports whether prompting is possible.
-func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
+// trustGate decides whether the local config may be executed. raw is the
+// content that was actually parsed (nil when no local config exists). It
+// returns nil to allow execution or an error explaining why it is blocked.
+// allow corresponds to --trust; interactive reports whether prompting is
+// possible.
+func trustGate(localPath, storePath string, raw []byte, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
 	// Only the working-directory config is gated; the global config is
 	// user-owned and implicitly trusted.
-	if !fileExists(localPath) {
+	if raw == nil {
 		return nil
 	}
 
@@ -322,10 +325,10 @@ func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, all
 	if err != nil {
 		return err
 	}
-	hash, err := trust.HashFile(localPath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", localPath, err)
-	}
+	// Hash the bytes that were parsed, not the file as it is now: the file
+	// can change between load and this check (e.g. while the prompt is
+	// open), and recording a hash of unseen content would pre-trust it.
+	hash := trust.HashBytes(raw)
 
 	store, err := trust.Load(storePath)
 	if err != nil {
@@ -370,11 +373,6 @@ func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, all
 	default:
 		return fmt.Errorf("%s not trusted; aborting", localPath)
 	}
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 func buildCommand(name string, def config.Command) *cobra.Command {
