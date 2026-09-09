@@ -1,8 +1,10 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -116,6 +118,33 @@ commands:
 		}
 		if cfg.Commands["plan"].Group != "infra" {
 			t.Errorf("plan.group = %q, want %q", cfg.Commands["plan"].Group, "infra")
+		}
+	})
+
+	t.Run("preserves key case", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+commands:
+  buildAll:
+    cmd: echo build
+    env:
+      MyMixedCase: "value"
+`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := loadConfigFile(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		cmd, ok := cfg.Commands["buildAll"]
+		if !ok {
+			t.Fatalf("expected command %q, got keys %v", "buildAll", slices.Collect(maps.Keys(cfg.Commands)))
+		}
+		if cmd.Env["MyMixedCase"] != "value" {
+			t.Errorf("env = %v, want key %q preserved", cmd.Env, "MyMixedCase")
 		}
 	})
 

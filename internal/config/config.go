@@ -8,61 +8,60 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/spf13/viper"
 	"go.yaml.in/yaml/v3"
 )
 
 // Tool defines a required tool dependency
 type Tool struct {
-	MinVersion  string `mapstructure:"min_version"`
-	MaxVersion  string `mapstructure:"max_version"`
-	VersionCmd  string `mapstructure:"version_cmd"`
-	DownloadURL string `mapstructure:"download_url"`
+	MinVersion  string `yaml:"min_version"`
+	MaxVersion  string `yaml:"max_version"`
+	VersionCmd  string `yaml:"version_cmd"`
+	DownloadURL string `yaml:"download_url"`
 }
 
 // Argument defines a single command argument with optional validation
 type Argument struct {
-	Name    string   `mapstructure:"name"`
-	Values  []string `mapstructure:"values"`
-	Match   string   `mapstructure:"match"`
-	Exclude []string `mapstructure:"exclude"`
+	Name    string   `yaml:"name"`
+	Values  []string `yaml:"values"`
+	Match   string   `yaml:"match"`
+	Exclude []string `yaml:"exclude"`
 }
 
 // Group defines a named section for organising verbs in help output.
 // Declaration order in YAML controls display order.
 type Group struct {
-	Name        string `mapstructure:"name"`
-	Description string `mapstructure:"description"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
 }
 
 // Prompt defines an interactive prompt that collects user input at runtime.
 type Prompt struct {
-	Name        string `mapstructure:"name"`
-	Description string `mapstructure:"description"`
-	Sensitive   bool   `mapstructure:"sensitive"`
-	FromEnvVar  string `mapstructure:"from_env_var"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Sensitive   bool   `yaml:"sensitive"`
+	FromEnvVar  string `yaml:"from_env_var"`
 }
 
 // Platform defines an OS/arch-specific command variant. OS and Arch match
 // runtime.GOOS and runtime.GOARCH; an empty field matches anything.
 type Platform struct {
-	OS   string   `mapstructure:"os"`
-	Arch string   `mapstructure:"arch"`
-	Cmd  string   `mapstructure:"cmd"`
-	Cmds []string `mapstructure:"cmds"`
+	OS   string   `yaml:"os"`
+	Arch string   `yaml:"arch"`
+	Cmd  string   `yaml:"cmd"`
+	Cmds []string `yaml:"cmds"`
 }
 
 // Command defines a single verb's configuration
 type Command struct {
-	Name        string            `mapstructure:"name"`
-	Cmd         string            `mapstructure:"cmd"`
-	Cmds        []string          `mapstructure:"cmds"`
-	Env         map[string]string `mapstructure:"env"`
-	Description string            `mapstructure:"description"`
-	Group       string            `mapstructure:"group"`
-	Arguments   []Argument        `mapstructure:"arguments"`
-	Prompts     []Prompt          `mapstructure:"prompts"`
-	Platforms   []Platform        `mapstructure:"platforms"`
+	Name        string            `yaml:"name"`
+	Cmd         string            `yaml:"cmd"`
+	Cmds        []string          `yaml:"cmds"`
+	Env         map[string]string `yaml:"env"`
+	Description string            `yaml:"description"`
+	Group       string            `yaml:"group"`
+	Arguments   []Argument        `yaml:"arguments"`
+	Prompts     []Prompt          `yaml:"prompts"`
+	Platforms   []Platform        `yaml:"platforms"`
 }
 
 // resolvePlatforms rewrites each command to its first matching platform
@@ -88,10 +87,10 @@ func resolvePlatforms(commands map[string]Command, goos, goarch string) {
 
 // Config represents the full YAML configuration
 type Config struct {
-	Commands     map[string]Command `mapstructure:"commands"`
-	Tools        map[string]Tool    `mapstructure:"tools"`
-	Groups       []Group            `mapstructure:"groups"`
-	ShellOptions string             `mapstructure:"shell_options"` // prepended to all shell scripts (e.g., "set -euo pipefail")
+	Commands     map[string]Command `yaml:"commands"`
+	Tools        map[string]Tool    `yaml:"tools"`
+	Groups       []Group            `yaml:"groups"`
+	ShellOptions string             `yaml:"shell_options"` // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
 // Load merges global and local configs. Local overrides global.
@@ -133,87 +132,19 @@ func loadConfigFile(path string) (*Config, error) {
 		Tools:    make(map[string]Tool),
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
 		return cfg, nil
 	}
-
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, err
-	}
-
-	// Viper lowercases map keys, so we need to re-read env maps manually
-	// to preserve the original case of environment variable names
-	if err := rereadEnvMaps(v, cfg); err != nil {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
-}
-
-func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
-	configFile := v.ConfigFileUsed()
-	if configFile == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return nil // Ignore read errors, env will be empty
-	}
-
-	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil // Ignore parse errors
-	}
-
-	commandsRaw, ok := raw["commands"]
-	if !ok {
-		return nil
-	}
-
-	commands, ok := commandsRaw.(map[string]any)
-	if !ok {
-		return nil
-	}
-
-	for name, cmdRaw := range commands {
-		cmdMap, ok := cmdRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		envRaw, ok := cmdMap["env"]
-		if !ok {
-			continue
-		}
-
-		envMap, ok := envRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		env := make(map[string]string)
-		for k, v := range envMap {
-			if strVal, ok := v.(string); ok {
-				env[k] = strVal
-			}
-		}
-
-		if cmd, exists := cfg.Commands[name]; exists {
-			cmd.Env = env
-			cfg.Commands[name] = cmd
-		}
-	}
-
-	return nil
 }
 
 func mergeConfigs(global, local *Config) *Config {
