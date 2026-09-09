@@ -392,13 +392,13 @@ Usage:
 
 ## Tool Dependency Checks
 
-Before executing any verb, uGo checks configured tools:
+Before executing any verb, uGo verifies each configured tool exists in `$PATH`. Version constraints are **not** enforced pre-flight — they execute the configured `version_cmd`s, which would slow every invocation.
+
+`ugo check` runs the full validation:
 
 - Verifies each binary exists in `$PATH`
 - Extracts version from `version_cmd` output
 - Compares against `min_version` and `max_version` using semver
-
-Run `ugo check` manually to inspect all tool status.
 
 ```bash
 $ ugo check

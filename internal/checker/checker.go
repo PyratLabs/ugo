@@ -16,28 +16,29 @@ type Issue struct {
 	Errors []string
 }
 
+// CheckInstalled reports tools that are not on PATH. It never executes
+// config-defined version commands — verbs use it as a cheap pre-flight,
+// while the check command runs the full CheckTools.
+func CheckInstalled(tools map[string]config.Tool) []Issue {
+	var issues []Issue
+	for _, name := range sortedNames(tools) {
+		if _, err := exec.LookPath(name); err != nil {
+			issues = append(issues, Issue{Tool: name, Errors: []string{notInstalledMsg(name, tools[name])}})
+		}
+	}
+	return issues
+}
+
 // CheckTools validates all required tools are available with correct versions
 func CheckTools(tools map[string]config.Tool) []Issue {
 	var issues []Issue
 
-	// Iterate in sorted order so results (and the printed check output) are
-	// deterministic rather than following Go's randomized map iteration.
-	names := make([]string, 0, len(tools))
-	for name := range tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range sortedNames(tools) {
 		tool := tools[name]
 		var errs []string
 
 		if _, err := exec.LookPath(name); err != nil {
-			msg := fmt.Sprintf("%s is not installed", name)
-			if tool.DownloadURL != "" {
-				msg += fmt.Sprintf(", download at: %s", tool.DownloadURL)
-			}
-			errs = append(errs, msg)
+			errs = append(errs, notInstalledMsg(name, tool))
 			issues = append(issues, Issue{Tool: name, Errors: errs})
 			continue
 		}
@@ -62,6 +63,26 @@ func CheckTools(tools map[string]config.Tool) []Issue {
 	}
 
 	return issues
+}
+
+// sortedNames returns tool names in sorted order so results (and the printed
+// check output) are deterministic rather than following Go's randomized map
+// iteration.
+func sortedNames(tools map[string]config.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func notInstalledMsg(name string, tool config.Tool) string {
+	msg := fmt.Sprintf("%s is not installed", name)
+	if tool.DownloadURL != "" {
+		msg += fmt.Sprintf(", download at: %s", tool.DownloadURL)
+	}
+	return msg
 }
 
 // FormatErrors renders issues as user-friendly error messages

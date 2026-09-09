@@ -273,22 +273,22 @@ func printToolStatus(tools map[string]config.Tool, issues []checker.Issue) {
 	}
 }
 
+// runToolChecks is the pre-flight gate before a verb runs. It only verifies
+// tools exist on PATH — version constraints execute config-defined commands
+// and can be slow, so they are enforced by the check command instead.
 func runToolChecks() error {
 	if len(appCfg.Tools) == 0 {
 		return nil
 	}
 
-	issues := checker.CheckTools(appCfg.Tools)
-	if !checker.HasErrors(issues) {
+	issues := checker.CheckInstalled(appCfg.Tools)
+	if len(issues) == 0 {
 		return nil
 	}
 
 	output.CheckFail("Tool dependency errors:")
 	for _, issue := range issues {
 		for _, e := range issue.Errors {
-			if strings.HasPrefix(e, "version:") {
-				continue
-			}
 			output.CheckFail(fmt.Sprintf("%s: %s", issue.Tool, e))
 		}
 	}

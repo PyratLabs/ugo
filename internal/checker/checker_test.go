@@ -9,6 +9,26 @@ import (
 	"github.com/PyratLabs/ugo/internal/config"
 )
 
+func TestCheckInstalled(t *testing.T) {
+	tools := map[string]config.Tool{
+		// Version constraints must not trigger version command execution:
+		// this entry would produce an issue if the (unrunnable) version
+		// command were invoked or the impossible minimum were enforced.
+		"sh": {MinVersion: "99.0.0", VersionCmd: "no-such-version-cmd --version"},
+		"definitely-not-installed-xyz": {DownloadURL: "https://example.com/dl"},
+	}
+
+	issues := CheckInstalled(tools)
+
+	if len(issues) != 1 || issues[0].Tool != "definitely-not-installed-xyz" {
+		t.Fatalf("issues = %+v, want exactly one for the missing tool", issues)
+	}
+	want := "definitely-not-installed-xyz is not installed, download at: https://example.com/dl"
+	if len(issues[0].Errors) != 1 || issues[0].Errors[0] != want {
+		t.Errorf("errors = %v, want [%q]", issues[0].Errors, want)
+	}
+}
+
 func TestCheckTools(t *testing.T) {
 	tmp := t.TempDir()
 	scriptPath := filepath.Join(tmp, "fake-tool")
