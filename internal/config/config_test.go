@@ -1,14 +1,19 @@
 package config
 
 import (
+	"bytes"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
 func TestLoadConfigFile(t *testing.T) {
 	t.Run("missing file returns empty config", func(t *testing.T) {
-		cfg, err := loadConfigFile("/nonexistent/path/config.yaml")
+		cfg, _, err := loadConfigFile("/nonexistent/path/config.yaml")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -38,7 +43,7 @@ tools:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -75,7 +80,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -100,7 +105,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		cfg, err := loadConfigFile(path)
+		cfg, _, err := loadConfigFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -119,6 +124,33 @@ commands:
 		}
 	})
 
+	t.Run("preserves key case", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+commands:
+  buildAll:
+    cmd: echo build
+    env:
+      MyMixedCase: "value"
+`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, _, err := loadConfigFile(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		cmd, ok := cfg.Commands["buildAll"]
+		if !ok {
+			t.Fatalf("expected command %q, got keys %v", "buildAll", slices.Collect(maps.Keys(cfg.Commands)))
+		}
+		if cmd.Env["MyMixedCase"] != "value" {
+			t.Errorf("env = %v, want key %q preserved", cmd.Env, "MyMixedCase")
+		}
+	})
+
 	t.Run("invalid yaml", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.yaml")
@@ -126,7 +158,7 @@ commands:
 			t.Fatal(err)
 		}
 
-		_, err := loadConfigFile(path)
+		_, _, err := loadConfigFile(path)
 		if err == nil {
 			t.Error("expected error for invalid yaml")
 		}
@@ -157,7 +189,7 @@ func TestResolvePlatforms(t *testing.T) {
 		"empty-no-platforms": {Description: "no-op placeholder"},
 	}
 
-	resolvePlatforms(cmds, "darwin", "arm64")
+	resolvePlatforms(cmds, "darwin", "arm64", io.Discard)
 
 	want := map[string]string{
 		"exact":               "mac-arm",
@@ -185,6 +217,43 @@ func TestResolvePlatforms(t *testing.T) {
 	}
 }
 
+func TestResolvePlatformsCaseInsensitive(t *testing.T) {
+	cmds := map[string]Command{
+		"build": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "Darwin", Arch: "ARM64", Cmd: "mac"},
+		}},
+	}
+
+	resolvePlatforms(cmds, "darwin", "arm64", io.Discard)
+
+	if cmds["build"].Cmd != "mac" {
+		t.Errorf("build.Cmd = %q, want %q (os/arch should match case-insensitively)", cmds["build"].Cmd, "mac")
+	}
+}
+
+func TestResolvePlatformsWarnsOnUnknownValues(t *testing.T) {
+	var buf bytes.Buffer
+	cmds := map[string]Command{
+		"build": {Cmd: "fallback", Platforms: []Platform{
+			{OS: "linx", Cmd: "x"},
+			{OS: "linux", Arch: "amd65", Cmd: "y"},
+		}},
+	}
+
+	resolvePlatforms(cmds, "linux", "amd64", &buf)
+
+	out := buf.String()
+	if !strings.Contains(out, `"linx"`) {
+		t.Errorf("warnings = %q, want unknown os %q flagged", out, "linx")
+	}
+	if !strings.Contains(out, `"amd65"`) {
+		t.Errorf("warnings = %q, want unknown arch %q flagged", out, "amd65")
+	}
+	if cmds["build"].Cmd != "fallback" {
+		t.Errorf("build.Cmd = %q, want fallback (typo'd entries must not match)", cmds["build"].Cmd)
+	}
+}
+
 func TestLoadConfigFileParsesPlatforms(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -203,7 +272,7 @@ commands:
 		t.Fatal(err)
 	}
 
-	cfg, err := loadConfigFile(path)
+	cfg, _, err := loadConfigFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -291,10 +360,10 @@ func TestMergeConfigs(t *testing.T) {
 
 	t.Run("shell_options is preserved through merge", func(t *testing.T) {
 		tests := []struct {
-			name           string
-			global         string
-			local          string
-			wantShellOpts  string
+			name          string
+			global        string
+			local         string
+			wantShellOpts string
 		}{
 			{"local only", "", "set -euo pipefail", "set -euo pipefail"},
 			{"global only", "set -e", "", "set -e"},

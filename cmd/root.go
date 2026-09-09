@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,9 @@ const (
 	annRunsToolChecks = "ugo/runs-tool-checks"
 )
 
+// sensitiveMask replaces sensitive prompt references in displayed commands.
+const sensitiveMask = "********"
+
 // reservedNames are built-in command names that a config must not redefine.
 // Allowing a config to shadow them creates ambiguous dispatch and, for the
 // trust-exempt built-ins, a path to run untrusted code.
@@ -44,6 +48,7 @@ var reservedNames = map[string]bool{
 var (
 	binaryName string
 	appCfg     *config.Config
+	localRaw   []byte // raw bytes of the local config as parsed; nil when absent
 	noColor    bool
 	trustFlag  bool
 )
@@ -52,7 +57,7 @@ func RootCmd() *cobra.Command {
 	binaryName = config.BinaryName()
 
 	var err error
-	appCfg, err = config.Load(binaryName)
+	appCfg, localRaw, err = config.Load(binaryName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
@@ -95,10 +100,12 @@ Local config overrides global config for the same verb names.`,
 		},
 	}
 
-	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
+	// NO_COLOR (https://no-color.org) sets the default; --no-color=false
+	// still overrides it explicitly.
+	root.PersistentFlags().BoolVar(&noColor, "no-color", os.Getenv("NO_COLOR") != "", "disable color output")
 	root.PersistentFlags().BoolVar(&trustFlag, "trust", false, "trust this directory's config without prompting (for CI/CD)")
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
-		return fmt.Errorf("unknown flag: %s\nRun '%s help' for usage", err.Error(), binaryName)
+		return fmt.Errorf("%s\nRun '%s help' for usage", err.Error(), binaryName)
 	})
 
 	// Build subcommands from config. Names that collide with built-in
@@ -214,7 +221,7 @@ func checkCmd() *cobra.Command {
 				return
 			}
 
-			output.Bold("Checking tool dependencies...\n")
+			fmt.Fprintf(os.Stdout, "%s\n\n", output.Bold("Checking tool dependencies..."))
 
 			issues := checker.CheckTools(appCfg.Tools)
 			printToolStatus(appCfg.Tools, issues)
@@ -268,22 +275,22 @@ func printToolStatus(tools map[string]config.Tool, issues []checker.Issue) {
 	}
 }
 
+// runToolChecks is the pre-flight gate before a verb runs. It only verifies
+// tools exist on PATH — version constraints execute config-defined commands
+// and can be slow, so they are enforced by the check command instead.
 func runToolChecks() error {
 	if len(appCfg.Tools) == 0 {
 		return nil
 	}
 
-	issues := checker.CheckTools(appCfg.Tools)
-	if !checker.HasErrors(issues) {
+	issues := checker.CheckInstalled(appCfg.Tools)
+	if len(issues) == 0 {
 		return nil
 	}
 
 	output.CheckFail("Tool dependency errors:")
 	for _, issue := range issues {
 		for _, e := range issue.Errors {
-			if strings.HasPrefix(e, "version:") {
-				continue
-			}
 			output.CheckFail(fmt.Sprintf("%s: %s", issue.Tool, e))
 		}
 	}
@@ -301,16 +308,18 @@ func enforceTrust() error {
 		return err
 	}
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	return trustGate(localPath, storePath, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+	return trustGate(localPath, storePath, localRaw, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
 }
 
-// trustGate decides whether the local config may be executed. It returns nil to
-// allow execution or an error explaining why it is blocked. allow corresponds
-// to --trust; interactive reports whether prompting is possible.
-func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
+// trustGate decides whether the local config may be executed. raw is the
+// content that was actually parsed (nil when no local config exists). It
+// returns nil to allow execution or an error explaining why it is blocked.
+// allow corresponds to --trust; interactive reports whether prompting is
+// possible.
+func trustGate(localPath, storePath string, raw []byte, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
 	// Only the working-directory config is gated; the global config is
 	// user-owned and implicitly trusted.
-	if !fileExists(localPath) {
+	if raw == nil {
 		return nil
 	}
 
@@ -318,10 +327,10 @@ func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, all
 	if err != nil {
 		return err
 	}
-	hash, err := trust.HashFile(localPath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", localPath, err)
-	}
+	// Hash the bytes that were parsed, not the file as it is now: the file
+	// can change between load and this check (e.g. while the prompt is
+	// open), and recording a hash of unseen content would pre-trust it.
+	hash := trust.HashBytes(raw)
 
 	store, err := trust.Load(storePath)
 	if err != nil {
@@ -366,11 +375,6 @@ func trustGate(localPath, storePath string, in *bufio.Reader, out io.Writer, all
 	default:
 		return fmt.Errorf("%s not trusted; aborting", localPath)
 	}
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 func buildCommand(name string, def config.Command) *cobra.Command {
@@ -473,7 +477,7 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	}
 
 	vars := args.ArgMap(def.Arguments, values)
-	sensitiveNames := make(map[string]bool)
+	secretEnv := make(map[string]string)
 
 	// Collect interactive prompt values
 	for _, p := range def.Prompts {
@@ -483,9 +487,6 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 		if p.FromEnvVar != "" {
 			if envVal, ok := os.LookupEnv(p.FromEnvVar); ok {
 				value = envVal
-				if p.Sensitive {
-					sensitiveNames[p.Name] = true
-				}
 			}
 		}
 
@@ -496,7 +497,6 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 		if value == "" {
 			var err error
 			if p.Sensitive {
-				sensitiveNames[p.Name] = true
 				value, err = readSensitiveInput(p.Description)
 			} else {
 				value, err = readInput(p.Description)
@@ -507,18 +507,41 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 			}
 		}
 
-		vars[p.Name] = value
+		// Sensitive values never enter the command text: the script becomes
+		// the argv of "sh -c", which is world-readable in /proc while it
+		// runs. They ride in the child environment instead, and the ${name}
+		// reference is left literal for the shell to expand.
+		if p.Sensitive {
+			secretEnv[p.Name] = value
+		} else {
+			vars[p.Name] = value
+		}
 	}
 
-	// Expand env values against argument and prompt vars
-	expandedEnv := expandEnv(def.Env, vars)
+	// env: values may reference sensitive prompts — the environment is only
+	// readable by the same user, unlike argv, so real values are safe here.
+	allVars := make(map[string]string, len(vars)+len(secretEnv))
+	maps.Copy(allVars, vars)
+	maps.Copy(allVars, secretEnv)
+	expandedEnv := expandEnv(def.Env, allVars)
+
+	childEnv := secretEnv
+	maps.Copy(childEnv, expandedEnv) // an explicit env: key wins over an injected prompt
+
+	// The displayed command masks sensitive references; the executed script
+	// keeps them as literal ${name} for the shell to expand from childEnv.
+	displayVars := maps.Clone(vars)
+	for name := range secretEnv {
+		displayVars[name] = sensitiveMask
+	}
+
 	shellOpts := appCfg.ShellOptions
 
 	if len(def.Cmds) > 0 {
-		return executeCmdsList(name, def.Cmds, vars, expandedEnv, shellOpts, sensitiveNames)
+		return executeCmdsList(name, def.Cmds, vars, displayVars, childEnv, shellOpts)
 	}
 
-	return executeCmdString(name, def.Cmd, vars, expandedEnv, shellOpts, sensitiveNames)
+	return executeCmdString(name, def.Cmd, vars, displayVars, childEnv, shellOpts)
 }
 
 func readInput(description string) (string, error) {
@@ -541,9 +564,7 @@ func readSensitiveInput(description string) (string, error) {
 	return string(bytepw), nil
 }
 
-func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
-	displayVars := output.MaskedVars(vars, sensitiveNames)
-
+func executeCmdsList(name string, cmdsList []string, vars, displayVars, env map[string]string, shellOpts string) error {
 	for i, cmdStr := range cmdsList {
 		expanded := expandVars(cmdStr, vars)
 		display := expandVars(cmdStr, displayVars)
@@ -567,10 +588,8 @@ func executeCmdsList(name string, cmdsList []string, vars map[string]string, env
 	return nil
 }
 
-func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string, sensitiveNames map[string]bool) error {
+func executeCmdString(name, cmdStr string, vars, displayVars, env map[string]string, shellOpts string) error {
 	expanded := expandVars(cmdStr, vars)
-	displayVars := output.MaskedVars(vars, sensitiveNames)
-	display := expandVars(cmdStr, displayVars)
 
 	if strings.TrimSpace(expanded) == "" {
 		output.CommandSuccess(name)
@@ -583,7 +602,7 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
 	} else {
-		output.CommandRunning(name, display)
+		output.CommandRunning(name, expandVars(cmdStr, displayVars))
 	}
 
 	if err := runShellScript(expanded, env, shellOpts); err != nil {

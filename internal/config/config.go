@@ -2,80 +2,104 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/spf13/viper"
 	"go.yaml.in/yaml/v3"
 )
 
 // Tool defines a required tool dependency
 type Tool struct {
-	MinVersion  string `mapstructure:"min_version"`
-	MaxVersion  string `mapstructure:"max_version"`
-	VersionCmd  string `mapstructure:"version_cmd"`
-	DownloadURL string `mapstructure:"download_url"`
+	MinVersion  string `yaml:"min_version"`
+	MaxVersion  string `yaml:"max_version"`
+	VersionCmd  string `yaml:"version_cmd"`
+	DownloadURL string `yaml:"download_url"`
 }
 
 // Argument defines a single command argument with optional validation
 type Argument struct {
-	Name    string   `mapstructure:"name"`
-	Values  []string `mapstructure:"values"`
-	Match   string   `mapstructure:"match"`
-	Exclude []string `mapstructure:"exclude"`
+	Name    string   `yaml:"name"`
+	Values  []string `yaml:"values"`
+	Match   string   `yaml:"match"`
+	Exclude []string `yaml:"exclude"`
 }
 
 // Group defines a named section for organising verbs in help output.
 // Declaration order in YAML controls display order.
 type Group struct {
-	Name        string `mapstructure:"name"`
-	Description string `mapstructure:"description"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
 }
 
 // Prompt defines an interactive prompt that collects user input at runtime.
 type Prompt struct {
-	Name        string `mapstructure:"name"`
-	Description string `mapstructure:"description"`
-	Sensitive   bool   `mapstructure:"sensitive"`
-	FromEnvVar  string `mapstructure:"from_env_var"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Sensitive   bool   `yaml:"sensitive"`
+	FromEnvVar  string `yaml:"from_env_var"`
 }
 
 // Platform defines an OS/arch-specific command variant. OS and Arch match
 // runtime.GOOS and runtime.GOARCH; an empty field matches anything.
 type Platform struct {
-	OS   string   `mapstructure:"os"`
-	Arch string   `mapstructure:"arch"`
-	Cmd  string   `mapstructure:"cmd"`
-	Cmds []string `mapstructure:"cmds"`
+	OS   string   `yaml:"os"`
+	Arch string   `yaml:"arch"`
+	Cmd  string   `yaml:"cmd"`
+	Cmds []string `yaml:"cmds"`
 }
 
-// Command defines a single verb's configuration
+// Command defines a single verb's configuration. A command's name is its key
+// in the commands map.
 type Command struct {
-	Name        string            `mapstructure:"name"`
-	Cmd         string            `mapstructure:"cmd"`
-	Cmds        []string          `mapstructure:"cmds"`
-	Env         map[string]string `mapstructure:"env"`
-	Description string            `mapstructure:"description"`
-	Group       string            `mapstructure:"group"`
-	Arguments   []Argument        `mapstructure:"arguments"`
-	Prompts     []Prompt          `mapstructure:"prompts"`
-	Platforms   []Platform        `mapstructure:"platforms"`
+	Cmd         string            `yaml:"cmd"`
+	Cmds        []string          `yaml:"cmds"`
+	Env         map[string]string `yaml:"env"`
+	Description string            `yaml:"description"`
+	Group       string            `yaml:"group"`
+	Arguments   []Argument        `yaml:"arguments"`
+	Prompts     []Prompt          `yaml:"prompts"`
+	Platforms   []Platform        `yaml:"platforms"`
+}
+
+// Valid GOOS/GOARCH values (from "go tool dist list"), used only to warn on
+// typos — an unknown value silently matches nothing, hiding the verb with no
+// explanation otherwise.
+var knownOS = map[string]bool{
+	"aix": true, "android": true, "darwin": true, "dragonfly": true,
+	"freebsd": true, "illumos": true, "ios": true, "js": true, "linux": true,
+	"netbsd": true, "openbsd": true, "plan9": true, "solaris": true,
+	"wasip1": true, "windows": true,
+}
+
+var knownArch = map[string]bool{
+	"386": true, "amd64": true, "arm": true, "arm64": true, "loong64": true,
+	"mips": true, "mipsle": true, "mips64": true, "mips64le": true,
+	"ppc64": true, "ppc64le": true, "riscv64": true, "s390x": true,
+	"wasm": true,
 }
 
 // resolvePlatforms rewrites each command to its first matching platform
 // variant, keeping the top-level cmd/cmds as fallback. Commands with no
-// matching variant and no fallback are removed.
-func resolvePlatforms(commands map[string]Command, goos, goarch string) {
+// matching variant and no fallback are removed. os/arch values match
+// runtime.GOOS/GOARCH case-insensitively; unrecognised values are reported
+// on warn.
+func resolvePlatforms(commands map[string]Command, goos, goarch string, warn io.Writer) {
 	for name, cmd := range commands {
 		matched := false
 		for _, p := range cmd.Platforms {
-			if (p.OS == "" || p.OS == goos) && (p.Arch == "" || p.Arch == goarch) {
+			if p.OS != "" && !knownOS[strings.ToLower(p.OS)] {
+				fmt.Fprintf(warn, "warning: command %q: unknown os %q in platforms\n", name, p.OS)
+			}
+			if p.Arch != "" && !knownArch[strings.ToLower(p.Arch)] {
+				fmt.Fprintf(warn, "warning: command %q: unknown arch %q in platforms\n", name, p.Arch)
+			}
+			if !matched && (p.OS == "" || strings.EqualFold(p.OS, goos)) && (p.Arch == "" || strings.EqualFold(p.Arch, goarch)) {
 				cmd.Cmd, cmd.Cmds = p.Cmd, p.Cmds
 				matched = true
-				break
 			}
 		}
 		if !matched && len(cmd.Platforms) > 0 && cmd.Cmd == "" && len(cmd.Cmds) == 0 {
@@ -88,132 +112,62 @@ func resolvePlatforms(commands map[string]Command, goos, goarch string) {
 
 // Config represents the full YAML configuration
 type Config struct {
-	Commands      map[string]Command `mapstructure:"commands"`
-	Tools         map[string]Tool    `mapstructure:"tools"`
-	Groups        []Group            `mapstructure:"groups"`
-	ShellOptions  string             `mapstructure:"shell_options"`   // prepended to all shell scripts (e.g., "set -euo pipefail")
+	Commands     map[string]Command `yaml:"commands"`
+	Tools        map[string]Tool    `yaml:"tools"`
+	Groups       []Group            `yaml:"groups"`
+	ShellOptions string             `yaml:"shell_options"` // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
-// Load merges global and local configs. Local overrides global.
-// binaryName is used to locate both config locations.
-func Load(binaryName string) (*Config, error) {
-	global, err := loadGlobalConfig(binaryName)
+// Load merges global and local configs. Local overrides global. It also
+// returns the local config's raw bytes (nil when absent) so callers can
+// trust-check exactly the content that was parsed, not whatever is on disk
+// by the time the check runs. binaryName is used to locate both configs.
+func Load(binaryName string) (*Config, []byte, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("loading global config: %w", err)
+		return nil, nil, fmt.Errorf("getting home directory: %w", err)
 	}
 
-	local, err := loadLocalConfig(binaryName)
+	global, _, err := loadConfigFile(filepath.Join(home, ".config", binaryName, "config.yaml"))
 	if err != nil {
-		return nil, fmt.Errorf("loading local config: %w", err)
+		return nil, nil, fmt.Errorf("loading global config: %w", err)
+	}
+
+	local, localRaw, err := loadConfigFile(filepath.Join(".", binaryName+".yaml"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading local config: %w", err)
 	}
 
 	merged := mergeConfigs(global, local)
-	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH)
-	return merged, nil
+	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH, os.Stderr)
+	return merged, localRaw, nil
 }
 
-func loadGlobalConfig(binaryName string) (*Config, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("getting home directory: %w", err)
-	}
-
-	configPath := filepath.Join(home, ".config", binaryName, "config.yaml")
-	return loadConfigFile(configPath)
-}
-
-func loadLocalConfig(binaryName string) (*Config, error) {
-	configPath := filepath.Join(".", binaryName+".yaml")
-	return loadConfigFile(configPath)
-}
-
-func loadConfigFile(path string) (*Config, error) {
-	cfg := &Config{
+// loadConfigFile parses the config at path. raw is the exact bytes that were
+// parsed, and is nil if and only if the file does not exist — the trust gate
+// relies on that distinction, so an existing-but-empty file stays non-nil.
+func loadConfigFile(path string) (cfg *Config, raw []byte, err error) {
+	cfg = &Config{
 		Commands: make(map[string]Command),
 		Tools:    make(map[string]Tool),
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return cfg, nil
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return cfg, nil, nil
 	}
-
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		return nil, err
-	}
-
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, err
-	}
-
-	// Viper lowercases map keys, so we need to re-read env maps manually
-	// to preserve the original case of environment variable names
-	if err := rereadEnvMaps(v, cfg); err != nil {
-		return nil, err
-	}
-
-	return cfg, nil
-}
-
-func rereadEnvMaps(v *viper.Viper, cfg *Config) error {
-	configFile := v.ConfigFileUsed()
-	if configFile == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(configFile)
 	if err != nil {
-		return nil // Ignore read errors, env will be empty
+		return nil, nil, err
 	}
 
-	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil // Ignore parse errors
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, nil, err
 	}
 
-	commandsRaw, ok := raw["commands"]
-	if !ok {
-		return nil
+	if data == nil {
+		data = []byte{}
 	}
-
-	commands, ok := commandsRaw.(map[string]any)
-	if !ok {
-		return nil
-	}
-
-	for name, cmdRaw := range commands {
-		cmdMap, ok := cmdRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		envRaw, ok := cmdMap["env"]
-		if !ok {
-			continue
-		}
-
-		envMap, ok := envRaw.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		env := make(map[string]string)
-		for k, v := range envMap {
-			if strVal, ok := v.(string); ok {
-				env[k] = strVal
-			}
-		}
-
-		if cmd, exists := cfg.Commands[name]; exists {
-			cmd.Env = env
-			cfg.Commands[name] = cmd
-		}
-	}
-
-	return nil
+	return cfg, data, nil
 }
 
 func mergeConfigs(global, local *Config) *Config {

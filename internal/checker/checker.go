@@ -16,28 +16,29 @@ type Issue struct {
 	Errors []string
 }
 
+// CheckInstalled reports tools that are not on PATH. It never executes
+// config-defined version commands — verbs use it as a cheap pre-flight,
+// while the check command runs the full CheckTools.
+func CheckInstalled(tools map[string]config.Tool) []Issue {
+	var issues []Issue
+	for _, name := range sortedNames(tools) {
+		if _, err := exec.LookPath(name); err != nil {
+			issues = append(issues, Issue{Tool: name, Errors: []string{notInstalledMsg(name, tools[name])}})
+		}
+	}
+	return issues
+}
+
 // CheckTools validates all required tools are available with correct versions
 func CheckTools(tools map[string]config.Tool) []Issue {
 	var issues []Issue
 
-	// Iterate in sorted order so results (and the printed check output) are
-	// deterministic rather than following Go's randomized map iteration.
-	names := make([]string, 0, len(tools))
-	for name := range tools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range sortedNames(tools) {
 		tool := tools[name]
 		var errs []string
 
 		if _, err := exec.LookPath(name); err != nil {
-			msg := fmt.Sprintf("%s is not installed", name)
-			if tool.DownloadURL != "" {
-				msg += fmt.Sprintf(", download at: %s", tool.DownloadURL)
-			}
-			errs = append(errs, msg)
+			errs = append(errs, notInstalledMsg(name, tool))
 			issues = append(issues, Issue{Tool: name, Errors: errs})
 			continue
 		}
@@ -51,7 +52,7 @@ func CheckTools(tools map[string]config.Tool) []Issue {
 			foundVer, err := version.Check(name, cmd, tool.MinVersion, tool.MaxVersion)
 			if err != nil {
 				errs = append(errs, err.Error())
-			} else if tool.MinVersion != "" || tool.MaxVersion != "" {
+			} else {
 				errs = append(errs, fmt.Sprintf("version: %s", foundVer))
 			}
 		}
@@ -64,18 +65,24 @@ func CheckTools(tools map[string]config.Tool) []Issue {
 	return issues
 }
 
-// FormatErrors renders issues as user-friendly error messages
-func FormatErrors(issues []Issue) string {
-	var b strings.Builder
-	for _, issue := range issues {
-		for _, err := range issue.Errors {
-			if strings.HasPrefix(err, "version:") {
-				continue // version info, not an error
-			}
-			b.WriteString(fmt.Sprintf("  - %s: %s\n", issue.Tool, err))
-		}
+// sortedNames returns tool names in sorted order so results (and the printed
+// check output) are deterministic rather than following Go's randomized map
+// iteration.
+func sortedNames(tools map[string]config.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
 	}
-	return strings.TrimSuffix(b.String(), "\n")
+	sort.Strings(names)
+	return names
+}
+
+func notInstalledMsg(name string, tool config.Tool) string {
+	msg := fmt.Sprintf("%s is not installed", name)
+	if tool.DownloadURL != "" {
+		msg += fmt.Sprintf(", download at: %s", tool.DownloadURL)
+	}
+	return msg
 }
 
 // HasErrors returns true if any issues contain actual errors (not just version info)

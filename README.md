@@ -93,6 +93,8 @@ shell_options: "set -euo pipefail"
 
 This enables strict mode: exit on error (`-e`), unset variable error (`-u`), and pipe failure detection (`-o pipefail`).
 
+A local config's `shell_options` overrides the global one, but an *empty* local value means "inherit" — a local config cannot currently clear globally-set shell options.
+
 ### Config format
 
 #### Tools
@@ -146,7 +148,7 @@ commands:
 
 #### Platforms
 
-A command can provide OS- and architecture-specific variants. `os` and `arch` match Go's [`runtime.GOOS` and `runtime.GOARCH`](https://go.dev/doc/install/source#environment) values (`darwin`, `linux`, `windows` / `amd64`, `arm64`, ...); an omitted field matches anything. The first matching entry wins, in YAML order. Only `cmd`/`cmds` vary per platform — a matching variant replaces both; `env`, `arguments`, and `prompts` stay shared:
+A command can provide OS- and architecture-specific variants. `os` and `arch` match Go's [`runtime.GOOS` and `runtime.GOARCH`](https://go.dev/doc/install/source#environment) values (`darwin`, `linux`, `windows` / `amd64`, `arm64`, ...) case-insensitively; an omitted field matches anything, and a value that isn't a known GOOS/GOARCH prints a warning so a typo can't silently hide a verb. The first matching entry wins, in YAML order. Only `cmd`/`cmds` vary per platform — a matching variant replaces both; `env`, `arguments`, and `prompts` stay shared:
 
 ```yaml
 commands:
@@ -230,10 +232,10 @@ commands:
 |-------|-------------|
 | `name` | Template variable name (used as `${name}` in commands) |
 | `description` | Question shown to the user at the prompt |
-| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output; the real value is passed to the command |
+| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output. The value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores) |
 | `from_env_var` | If set, the prompt is skipped when this environment variable is already set; its value is used directly. Falls through to interactive prompt when unset or empty |
 
-Running the above command will prompt for the token, mask it on screen, and expand both `${manifest}` and `${api_token}` in the command:
+Running the above command will prompt for the token, mask it on screen, expand `${manifest}` as text, and hand `${api_token}` to the shell to expand from the environment:
 
 ```bash
 $ ugo deploy deployment.yaml
@@ -279,7 +281,7 @@ Arguments support three validation modes:
 | Mode | Config | Behavior |
 |------|--------|----------|
 | **Enum** | `values: [dev, staging, prod]` | Value must be in the list |
-| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts full path, basename, basename without extension, or directory name |
+| **Glob** | `match: "playbooks/*.yaml"` | Checks files on disk; accepts the matched path, or exactly the name help displays (directory name for directory globs, basename without extension otherwise) |
 | **Regex** | `match: "[a-z]+"` | Full-string regex match (auto-anchored) |
 | **Exclude** | `exclude: [default]` | Disallowed values (hidden from help output) |
 
@@ -392,13 +394,13 @@ Usage:
 
 ## Tool Dependency Checks
 
-Before executing any verb, uGo checks configured tools:
+Before executing any verb, uGo verifies each configured tool exists in `$PATH`. Version constraints are **not** enforced pre-flight — they execute the configured `version_cmd`s, which would slow every invocation.
+
+`ugo check` runs the full validation:
 
 - Verifies each binary exists in `$PATH`
 - Extracts version from `version_cmd` output
 - Compares against `min_version` and `max_version` using semver
-
-Run `ugo check` manually to inspect all tool status.
 
 ```bash
 $ ugo check
@@ -447,7 +449,7 @@ When no terminal is attached and `--trust` is not given, uGo refuses to run rath
 
 ### Argument and prompt values are expanded as shell text
 
-`${name}` placeholders are substituted into the command string *before* it is handed to `sh -c`, and the values are **not** shell-quoted. A value like `foo; rm -rf ~` placed in an unconstrained argument runs as written.
+`${name}` placeholders are substituted into the command string *before* it is handed to `sh -c`, and the values are **not** shell-quoted. A value like `foo; rm -rf ~` placed in an unconstrained argument runs as written. (Sensitive prompt values are the exception — they travel via the environment instead; see [Secrets](#secrets).)
 
 If a verb can receive values from an untrusted or external source (CI variables, webhooks, etc.), constrain those arguments:
 
@@ -458,12 +460,14 @@ Arguments with neither are accepted verbatim. Unresolved `${name}` placeholders 
 
 ### Secrets
 
-`sensitive: true` masks a prompt's value **in uGo's own output only** — the `🚀` line shows `********`. The real value is still expanded into the command, which means:
+`sensitive: true` values are never expanded into the command text. The script handed to `sh -c` is visible in the process list (`ps`, `/proc/<pid>/cmdline`) to other local users while it runs, so uGo instead injects the value into the command's environment (readable only by the same user) and leaves `${name}` in the script for the shell to expand.
 
-- it is passed to `sh -c`, so it can be visible in the process list (`ps`, `/proc`) to other local users while the command runs; and
-- enabling shell tracing through `shell_options` (e.g. `set -x`) echoes the expanded command — including the secret — to stderr.
+Two caveats remain:
 
-Prefer passing secrets through the environment — reference a `${prompt}` from an `env:` value and use `"$VAR"` in the command, rather than interpolating the secret directly into `cmd` — and avoid `set -x` when handling sensitive prompts.
+- shell tracing through `shell_options` (e.g. `set -x`) echoes commands *after* the shell expands them — including the secret — to stderr; avoid it for verbs with sensitive prompts.
+- because the shell performs the expansion, a `${name}` inside single quotes (where the shell does not expand) stays literal. Non-sensitive prompts and arguments are still expanded as text by uGo, as before.
+
+An explicit `env:` key with the same name as a sensitive prompt takes precedence over the injected value.
 
 ## Colored Output
 
@@ -472,6 +476,8 @@ uGo uses UTF-8 icons and colors for status output. Use `--no-color` to disable:
 ```bash
 ugo --no-color plan dev ensure-ssh
 ```
+
+Setting the [`NO_COLOR`](https://no-color.org) environment variable (to any non-empty value) has the same effect; `--no-color=false` overrides it.
 
 ## Further Reading
 

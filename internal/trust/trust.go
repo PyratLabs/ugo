@@ -80,8 +80,32 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
+	// Write-to-temp + rename so a crash mid-write cannot corrupt the store,
+	// which would otherwise block every trusted run until manually deleted.
 	// 0600: this is per-user security state, not shared config.
-	return os.WriteFile(s.path, data, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".trust-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.path)
+}
+
+// HashBytes returns the hex-encoded SHA-256 of data.
+func HashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // HashFile returns the hex-encoded SHA-256 of the file at path.
@@ -90,8 +114,7 @@ func HashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	return HashBytes(data), nil
 }
 
 // DefaultStorePath returns the trust store location for a binary:

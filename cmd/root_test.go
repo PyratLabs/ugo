@@ -3,12 +3,15 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/PyratLabs/ugo/internal/config"
+	"github.com/PyratLabs/ugo/internal/trust"
 	"github.com/spf13/cobra"
 )
 
@@ -309,6 +312,135 @@ commands:
 	}
 }
 
+func TestCheckPrintsHeader(t *testing.T) {
+	out := runVerb(t, "checkhdr", `
+tools:
+  sh:
+    download_url: "https://example.com"
+`, "check")
+
+	if !strings.Contains(out, "Checking tool dependencies") {
+		t.Errorf("check output = %q, want to contain %q", out, "Checking tool dependencies")
+	}
+}
+
+func TestNoColorEnvVar(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("HOME", t.TempDir())
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	os.Args = []string{"nocolorenv"}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+	if got := root.PersistentFlags().Lookup("no-color").DefValue; got != "true" {
+		t.Errorf("no-color default with NO_COLOR set = %q, want %q", got, "true")
+	}
+}
+
+func TestUnknownFlagErrorNotDoubled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	os.Args = []string{"flagerr"}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--bogus"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if got := strings.Count(err.Error(), "unknown flag:"); got != 1 {
+		t.Errorf("error %q contains %d %q prefixes, want exactly 1", err.Error(), got, "unknown flag:")
+	}
+}
+
+func TestSensitivePromptInjectedAsEnv(t *testing.T) {
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	out := runVerb(t, "secretenv", `
+commands:
+  reveal:
+    cmds:
+      - 'printenv secret || echo NOT_IN_ENV'
+    description: "Print the secret from the environment"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if !containsLine(out, "hunter2") {
+		t.Errorf("output = %q, want sensitive value available as child env var 'secret'", out)
+	}
+}
+
+func TestSensitivePromptMaskedInDisplay(t *testing.T) {
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	out := runVerb(t, "secretmask", `
+commands:
+  reveal:
+    cmds:
+      - 'echo "value: ${secret}"'
+    description: "Echo the secret"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if !strings.Contains(out, `echo "value: ********"`) {
+		t.Errorf("output = %q, want display line to mask the sensitive value as ********", out)
+	}
+	if !containsLine(out, "value: hunter2") {
+		t.Errorf("output = %q, want the real value still delivered to the command", out)
+	}
+}
+
+func TestSensitivePromptNotInArgv(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc/<pid>/cmdline")
+	}
+
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	// ${$} is the shell's own pid; its cmdline holds the "sh -c <script>"
+	// argv, which is world-readable while the command runs.
+	out := runVerb(t, "secretargv", `
+commands:
+  reveal:
+    cmds:
+      - 'grep -q "hun""ter2" "/proc/${$}/cmdline" && echo LEAKED || echo CLEAN; echo "value: ${secret}"'
+    description: "Check the secret is not in the shell argv"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if containsLine(out, "LEAKED") || !containsLine(out, "CLEAN") {
+		t.Errorf("output = %q, sensitive value was expanded into the sh -c argv", out)
+	}
+	if !containsLine(out, "value: hunter2") {
+		t.Errorf("output = %q, want ${secret} still usable in command text via shell expansion", out)
+	}
+}
+
 func TestBuildCommand(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -574,10 +706,49 @@ func trustFixture(t *testing.T) (localPath, storePath string) {
 }
 
 func gate(localPath, storePath, answer string, allow, interactive bool) (string, error) {
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		raw = nil
+	}
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader(answer))
-	err := trustGate(localPath, storePath, in, &out, allow, interactive)
+	err = trustGate(localPath, storePath, raw, in, &out, allow, interactive)
 	return out.String(), err
+}
+
+func TestTrustGateHashesLoadedBytes(t *testing.T) {
+	localPath, storePath := trustFixture(t)
+	raw, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The file changes between config load and the trust prompt (TOCTOU):
+	// the recorded hash must be of the bytes that were parsed, not of the
+	// file as it is now — trusting unseen content would pre-approve it for
+	// the next run.
+	swapped := []byte("commands:\n  evil:\n    cmd: echo pwned\n")
+	if err := os.WriteFile(localPath, swapped, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	in := bufio.NewReader(strings.NewReader("y\n"))
+	if err := trustGate(localPath, storePath, raw, in, &out, false, true); err != nil {
+		t.Fatalf("trustGate: %v", err)
+	}
+
+	store, err := trust.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, _ := filepath.Abs(localPath)
+	if store.Status(abs, trust.HashBytes(raw)) != trust.Trusted {
+		t.Error("expected the loaded bytes' hash to be recorded as trusted")
+	}
+	if store.Status(abs, trust.HashBytes(swapped)) == trust.Trusted {
+		t.Error("swapped file content must not be pre-trusted")
+	}
 }
 
 func TestTrustGate(t *testing.T) {

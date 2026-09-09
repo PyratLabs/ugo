@@ -25,6 +25,13 @@ jobs:
       - name: Run tests with coverage
         id: test
         run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt check failed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
           go vet ./...
 
           set +e
