@@ -324,6 +324,25 @@ tools:
 	}
 }
 
+func TestNoColorEnvVar(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("HOME", t.TempDir())
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	os.Args = []string{"nocolorenv"}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+	if got := root.PersistentFlags().Lookup("no-color").DefValue; got != "true" {
+		t.Errorf("no-color default with NO_COLOR set = %q, want %q", got, "true")
+	}
+}
+
 func TestUnknownFlagErrorNotDoubled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	oldArgs := os.Args

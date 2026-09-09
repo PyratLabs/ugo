@@ -11,7 +11,9 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-var versionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+)`)
+// The patch component is optional: tools reporting "1.2" still parse, and
+// x/mod/semver treats v1.2 as v1.2.0 when comparing.
+var versionRe = regexp.MustCompile(`v?(\d+\.\d+(?:\.\d+)?)`)
 
 // versionCmdTimeout bounds how long a tool's version command may run. Version
 // checks are pre-flight — they run before every verb — so a hung version

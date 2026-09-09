@@ -52,9 +52,9 @@ type Platform struct {
 	Cmds []string `yaml:"cmds"`
 }
 
-// Command defines a single verb's configuration
+// Command defines a single verb's configuration. A command's name is its key
+// in the commands map.
 type Command struct {
-	Name        string            `yaml:"name"`
 	Cmd         string            `yaml:"cmd"`
 	Cmds        []string          `yaml:"cmds"`
 	Env         map[string]string `yaml:"env"`

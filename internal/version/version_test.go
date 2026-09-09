@@ -22,7 +22,9 @@ func TestExtractVersion(t *testing.T) {
 		{"terraform style", "Terraform v1.6.2\non linux_amd64", "v1.6.2"},
 		{"no version", "some random output", ""},
 		{"empty", "", ""},
-		{"partial version", "v1.2", ""},
+		{"major.minor only", "v1.2", "v1.2"},
+		{"major.minor in text", "tool 2.5", "v2.5"},
+		{"major only is not a version", "v1", ""},
 	}
 
 	for _, tt := range tests {

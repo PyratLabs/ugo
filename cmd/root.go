@@ -100,7 +100,9 @@ Local config overrides global config for the same verb names.`,
 		},
 	}
 
-	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
+	// NO_COLOR (https://no-color.org) sets the default; --no-color=false
+	// still overrides it explicitly.
+	root.PersistentFlags().BoolVar(&noColor, "no-color", os.Getenv("NO_COLOR") != "", "disable color output")
 	root.PersistentFlags().BoolVar(&trustFlag, "trust", false, "trust this directory's config without prompting (for CI/CD)")
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		return fmt.Errorf("%s\nRun '%s help' for usage", err.Error(), binaryName)

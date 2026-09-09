@@ -50,7 +50,7 @@ func TestCheckTools(t *testing.T) {
 		}
 		issues := CheckTools(tools)
 		if HasErrors(issues) {
-			t.Errorf("expected no errors, got: %v", FormatErrors(issues))
+			t.Errorf("expected no errors, got: %+v", issues)
 		}
 	})
 
@@ -191,21 +191,5 @@ func TestHasErrors(t *testing.T) {
 				t.Errorf("HasErrors() = %v, want %v", got, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestFormatErrors(t *testing.T) {
-	issues := []Issue{
-		{Tool: "missing", Errors: []string{"missing is not installed"}},
-		{Tool: "docker", Errors: []string{"version: v24.0.7"}},
-	}
-
-	got := FormatErrors(issues)
-	if got == "" {
-		t.Error("expected non-empty output")
-	}
-	// Should not include version info
-	if len(got) > 0 && got[0:2] != "  " {
-		t.Errorf("expected indented output, got: %q", got)
 	}
 }

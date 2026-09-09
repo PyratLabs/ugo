@@ -52,7 +52,7 @@ func CheckTools(tools map[string]config.Tool) []Issue {
 			foundVer, err := version.Check(name, cmd, tool.MinVersion, tool.MaxVersion)
 			if err != nil {
 				errs = append(errs, err.Error())
-			} else if tool.MinVersion != "" || tool.MaxVersion != "" {
+			} else {
 				errs = append(errs, fmt.Sprintf("version: %s", foundVer))
 			}
 		}
@@ -83,20 +83,6 @@ func notInstalledMsg(name string, tool config.Tool) string {
 		msg += fmt.Sprintf(", download at: %s", tool.DownloadURL)
 	}
 	return msg
-}
-
-// FormatErrors renders issues as user-friendly error messages
-func FormatErrors(issues []Issue) string {
-	var b strings.Builder
-	for _, issue := range issues {
-		for _, err := range issue.Errors {
-			if strings.HasPrefix(err, "version:") {
-				continue // version info, not an error
-			}
-			b.WriteString(fmt.Sprintf("  - %s: %s\n", issue.Tool, err))
-		}
-	}
-	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // HasErrors returns true if any issues contain actual errors (not just version info)

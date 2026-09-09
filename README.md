@@ -93,6 +93,8 @@ shell_options: "set -euo pipefail"
 
 This enables strict mode: exit on error (`-e`), unset variable error (`-u`), and pipe failure detection (`-o pipefail`).
 
+A local config's `shell_options` overrides the global one, but an *empty* local value means "inherit" — a local config cannot currently clear globally-set shell options.
+
 ### Config format
 
 #### Tools
@@ -474,6 +476,8 @@ uGo uses UTF-8 icons and colors for status output. Use `--no-color` to disable:
 ```bash
 ugo --no-color plan dev ensure-ssh
 ```
+
+Setting the [`NO_COLOR`](https://no-color.org) environment variable (to any non-empty value) has the same effect; `--no-color=false` overrides it.
 
 ## Further Reading
 
