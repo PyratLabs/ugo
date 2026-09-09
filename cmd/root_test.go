@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,6 +307,44 @@ commands:
 
 	if !strings.Contains(out, "grouped-hello") {
 		t.Errorf("output = %q, want to contain %q", out, "grouped-hello")
+	}
+}
+
+func TestCheckPrintsHeader(t *testing.T) {
+	out := runVerb(t, "checkhdr", `
+tools:
+  sh:
+    download_url: "https://example.com"
+`, "check")
+
+	if !strings.Contains(out, "Checking tool dependencies") {
+		t.Errorf("check output = %q, want to contain %q", out, "Checking tool dependencies")
+	}
+}
+
+func TestUnknownFlagErrorNotDoubled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	oldWd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	os.Args = []string{"flagerr"}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	root := RootCmd()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--bogus"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if got := strings.Count(err.Error(), "unknown flag:"); got != 1 {
+		t.Errorf("error %q contains %d %q prefixes, want exactly 1", err.Error(), got, "unknown flag:")
 	}
 }
 

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"os"
+
 	"github.com/PyratLabs/ugo/cmd"
 )
 
 func main() {
-	cmd.RootCmd().Execute()
+	if err := cmd.RootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
 }

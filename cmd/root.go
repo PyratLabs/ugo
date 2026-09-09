@@ -98,7 +98,7 @@ Local config overrides global config for the same verb names.`,
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
 	root.PersistentFlags().BoolVar(&trustFlag, "trust", false, "trust this directory's config without prompting (for CI/CD)")
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
-		return fmt.Errorf("unknown flag: %s\nRun '%s help' for usage", err.Error(), binaryName)
+		return fmt.Errorf("%s\nRun '%s help' for usage", err.Error(), binaryName)
 	})
 
 	// Build subcommands from config. Names that collide with built-in
@@ -214,7 +214,7 @@ func checkCmd() *cobra.Command {
 				return
 			}
 
-			output.Bold("Checking tool dependencies...\n")
+			fmt.Fprintf(os.Stdout, "%s\n\n", output.Bold("Checking tool dependencies..."))
 
 			issues := checker.CheckTools(appCfg.Tools)
 			printToolStatus(appCfg.Tools, issues)

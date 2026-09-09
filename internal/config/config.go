@@ -88,10 +88,10 @@ func resolvePlatforms(commands map[string]Command, goos, goarch string) {
 
 // Config represents the full YAML configuration
 type Config struct {
-	Commands      map[string]Command `mapstructure:"commands"`
-	Tools         map[string]Tool    `mapstructure:"tools"`
-	Groups        []Group            `mapstructure:"groups"`
-	ShellOptions  string             `mapstructure:"shell_options"`   // prepended to all shell scripts (e.g., "set -euo pipefail")
+	Commands     map[string]Command `mapstructure:"commands"`
+	Tools        map[string]Tool    `mapstructure:"tools"`
+	Groups       []Group            `mapstructure:"groups"`
+	ShellOptions string             `mapstructure:"shell_options"` // prepended to all shell scripts (e.g., "set -euo pipefail")
 }
 
 // Load merges global and local configs. Local overrides global.

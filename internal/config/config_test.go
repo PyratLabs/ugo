@@ -291,10 +291,10 @@ func TestMergeConfigs(t *testing.T) {
 
 	t.Run("shell_options is preserved through merge", func(t *testing.T) {
 		tests := []struct {
-			name           string
-			global         string
-			local          string
-			wantShellOpts  string
+			name          string
+			global        string
+			local         string
+			wantShellOpts string
 		}{
 			{"local only", "", "set -euo pipefail", "set -euo pipefail"},
 			{"global only", "set -e", "", "set -e"},
