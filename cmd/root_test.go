@@ -369,6 +369,29 @@ commands:
 	}
 }
 
+func TestSensitivePromptMaskedInDisplay(t *testing.T) {
+	t.Setenv("SECRET_TOKEN", "hunter2")
+	out := runVerb(t, "secretmask", `
+commands:
+  reveal:
+    cmds:
+      - 'echo "value: ${secret}"'
+    description: "Echo the secret"
+    prompts:
+      - name: secret
+        description: "Secret"
+        sensitive: true
+        from_env_var: "SECRET_TOKEN"
+`, "reveal")
+
+	if !strings.Contains(out, `echo "value: ********"`) {
+		t.Errorf("output = %q, want display line to mask the sensitive value as ********", out)
+	}
+	if !containsLine(out, "value: hunter2") {
+		t.Errorf("output = %q, want the real value still delivered to the command", out)
+	}
+}
+
 func TestSensitivePromptNotInArgv(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("reads /proc/<pid>/cmdline")

@@ -230,22 +230,22 @@ commands:
 |-------|-------------|
 | `name` | Template variable name (used as `${name}` in commands) |
 | `description` | Question shown to the user at the prompt |
-| `sensitive` | If `true`, input is hidden during entry and the value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores) |
+| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output. The value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores) |
 | `from_env_var` | If set, the prompt is skipped when this environment variable is already set; its value is used directly. Falls through to interactive prompt when unset or empty |
 
-Running the above command will prompt for the token, leave `${api_token}` for the shell to expand from the environment, and expand `${manifest}` as text:
+Running the above command will prompt for the token, mask it on screen, expand `${manifest}` as text, and hand `${api_token}` to the shell to expand from the environment:
 
 ```bash
 $ ugo deploy deployment.yaml
 Enter API token:         # input is hidden
-🚀 deploy: kubectl apply -f deployment.yaml --token ${api_token}
+🚀 deploy: kubectl apply -f deployment.yaml --token ********
 ```
 
 With `from_env_var`, if the environment variable is set, no prompt appears:
 
 ```bash
 $ API_TOKEN=sk-abc123 ugo deploy deployment.yaml
-🚀 deploy: kubectl apply -f deployment.yaml --token ${api_token}
+🚀 deploy: kubectl apply -f deployment.yaml --token ********
 ```
 
 The help output shows the env var fallback:

@@ -32,6 +32,9 @@ const (
 	annRunsToolChecks = "ugo/runs-tool-checks"
 )
 
+// sensitiveMask replaces sensitive prompt references in displayed commands.
+const sensitiveMask = "********"
+
 // reservedNames are built-in command names that a config must not redefine.
 // Allowing a config to shadow them creates ambiguous dispatch and, for the
 // trust-exempt built-ins, a path to run untrusted code.
@@ -525,13 +528,20 @@ func executeCommand(cmd *cobra.Command, name string, def config.Command, values 
 	childEnv := secretEnv
 	maps.Copy(childEnv, expandedEnv) // an explicit env: key wins over an injected prompt
 
+	// The displayed command masks sensitive references; the executed script
+	// keeps them as literal ${name} for the shell to expand from childEnv.
+	displayVars := maps.Clone(vars)
+	for name := range secretEnv {
+		displayVars[name] = sensitiveMask
+	}
+
 	shellOpts := appCfg.ShellOptions
 
 	if len(def.Cmds) > 0 {
-		return executeCmdsList(name, def.Cmds, vars, childEnv, shellOpts)
+		return executeCmdsList(name, def.Cmds, vars, displayVars, childEnv, shellOpts)
 	}
 
-	return executeCmdString(name, def.Cmd, vars, childEnv, shellOpts)
+	return executeCmdString(name, def.Cmd, vars, displayVars, childEnv, shellOpts)
 }
 
 func readInput(description string) (string, error) {
@@ -554,14 +564,15 @@ func readSensitiveInput(description string) (string, error) {
 	return string(bytepw), nil
 }
 
-func executeCmdsList(name string, cmdsList []string, vars map[string]string, env map[string]string, shellOpts string) error {
+func executeCmdsList(name string, cmdsList []string, vars, displayVars, env map[string]string, shellOpts string) error {
 	for i, cmdStr := range cmdsList {
 		expanded := expandVars(cmdStr, vars)
+		display := expandVars(cmdStr, displayVars)
 
 		if len(cmdsList) > 1 {
-			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), expanded)
+			output.CommandRunning(fmt.Sprintf("%s (%d/%d)", name, i+1, len(cmdsList)), display)
 		} else {
-			output.CommandRunning(name, expanded)
+			output.CommandRunning(name, display)
 		}
 
 		if err := runShellScript(expanded, env, shellOpts); err != nil {
@@ -577,7 +588,7 @@ func executeCmdsList(name string, cmdsList []string, vars map[string]string, env
 	return nil
 }
 
-func executeCmdString(name, cmdStr string, vars map[string]string, env map[string]string, shellOpts string) error {
+func executeCmdString(name, cmdStr string, vars, displayVars, env map[string]string, shellOpts string) error {
 	expanded := expandVars(cmdStr, vars)
 
 	if strings.TrimSpace(expanded) == "" {
@@ -591,7 +602,7 @@ func executeCmdString(name, cmdStr string, vars map[string]string, env map[strin
 	if strings.Contains(expanded, "\n") {
 		output.CommandRunning(name, "shell script")
 	} else {
-		output.CommandRunning(name, expanded)
+		output.CommandRunning(name, expandVars(cmdStr, displayVars))
 	}
 
 	if err := runShellScript(expanded, env, shellOpts); err != nil {
