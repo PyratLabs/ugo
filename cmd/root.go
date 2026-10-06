@@ -48,6 +48,7 @@ var reservedNames = map[string]bool{
 var (
 	binaryName string
 	appCfg     *config.Config
+	localCfg   *config.Config
 	localRaw   []byte // raw bytes of the local config as parsed; nil when absent
 	noColor    bool
 	trustFlag  bool
@@ -57,7 +58,7 @@ func RootCmd() *cobra.Command {
 	binaryName = config.BinaryName()
 
 	var err error
-	appCfg, localRaw, err = config.Load(binaryName)
+	appCfg, localCfg, localRaw, err = config.Load(binaryName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
@@ -115,6 +116,14 @@ Local config overrides global config for the same verb names.`,
 	for name, cmdDef := range appCfg.Commands {
 		if reservedNames[name] {
 			fmt.Fprintf(os.Stderr, "warning: ignoring config command %q: name is reserved\n", name)
+			continue
+		}
+		// cobra dispatches on the first word of Use, so a key like
+		// "version 2.0" would register Name()=="version" and shadow the
+		// built-in (config verbs are registered first). Control characters
+		// in a name would also be echoed raw into help output.
+		if !validCommandName(name) {
+			fmt.Fprintf(os.Stderr, "warning: ignoring config command %q: name must not contain whitespace or control characters\n", name)
 			continue
 		}
 		verbs[name] = buildCommand(name, cmdDef)
@@ -302,21 +311,93 @@ func runToolChecks() error {
 // store, prompting on os.Stdin or honoring --trust. It is thin glue over
 // trustGate so the latter stays free of globals and easy to test.
 func enforceTrust() error {
-	_, localPath := config.ConfigPaths(binaryName)
+	globalPath, localPath := config.ConfigPaths(binaryName)
 	storePath, err := trust.DefaultStorePath(binaryName)
 	if err != nil {
 		return err
 	}
+	warnIfWritableByOthers(storePath, "trust decisions may be subverted")
+	warnIfWritableByOthers(globalPath, "the global config is always trusted")
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	return trustGate(localPath, storePath, localRaw, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+	preview := trustPreview(localCfg, appCfg)
+	return trustGate(localPath, storePath, localRaw, preview, bufio.NewReader(os.Stdin), os.Stderr, trustFlag, interactive)
+}
+
+// warnIfWritableByOthers prints a warning when path exists and is writable
+// by group or other. The trust store and global config are per-user security
+// state; anyone who can write them can pre-approve arbitrary content.
+func warnIfWritableByOthers(path, consequence string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		fmt.Fprintf(os.Stderr, "warning: %s is writable by other users; %s\n", path, consequence)
+	}
+}
+
+// trustPreview summarizes the commands the local config defines so the trust
+// prompt shows what will actually run, not just an opaque path. Values come
+// from the merged (platform-resolved) config, keyed by the local config's
+// commands, so the preview matches execution.
+func trustPreview(local, effective *config.Config) string {
+	if local == nil || len(local.Commands) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(local.Commands))
+	for name := range local.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("    Commands this file defines:\n")
+	for _, name := range names {
+		def, ok := effective.Commands[name]
+		if !ok {
+			fmt.Fprintf(&b, "      %s: (no command on this platform)\n", name)
+			continue
+		}
+		fmt.Fprintf(&b, "      %s: %s\n", name, summarizeCommand(def))
+	}
+	return b.String()
+}
+
+// summarizeCommand renders the first line of a command's script, annotated
+// with how much is hidden, so a long or multiline script fits the prompt.
+func summarizeCommand(def config.Command) string {
+	script := def.Cmd
+	if len(def.Cmds) > 0 {
+		script = def.Cmds[0]
+	}
+	if strings.TrimSpace(script) == "" {
+		return "(no-op)"
+	}
+	first, _, _ := strings.Cut(script, "\n")
+	first = strings.TrimSpace(output.SanitizeInline(first))
+	const maxLen = 100
+	if len(first) > maxLen {
+		first = first[:maxLen] + "…"
+	}
+	switch {
+	case len(def.Cmds) > 1 && strings.Contains(script, "\n"):
+		return fmt.Sprintf("%s (+%d more lines, %d commands)", first, strings.Count(script, "\n"), len(def.Cmds))
+	case len(def.Cmds) > 1:
+		return fmt.Sprintf("%s (+%d more commands)", first, len(def.Cmds)-1)
+	case strings.Contains(script, "\n"):
+		return fmt.Sprintf("%s (+%d more lines)", first, strings.Count(script, "\n"))
+	default:
+		return first
+	}
 }
 
 // trustGate decides whether the local config may be executed. raw is the
-// content that was actually parsed (nil when no local config exists). It
-// returns nil to allow execution or an error explaining why it is blocked.
-// allow corresponds to --trust; interactive reports whether prompting is
-// possible.
-func trustGate(localPath, storePath string, raw []byte, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
+// content that was actually parsed (nil when no local config exists), and
+// preview, when non-empty, is shown in the prompt so the user sees what they
+// are trusting. It returns nil to allow execution or an error explaining why
+// it is blocked. allow corresponds to --trust; interactive reports whether
+// prompting is possible.
+func trustGate(localPath, storePath string, raw []byte, preview string, in *bufio.Reader, out io.Writer, allow, interactive bool) error {
 	// Only the working-directory config is gated; the global config is
 	// user-owned and implicitly trusted.
 	if raw == nil {
@@ -362,9 +443,18 @@ func trustGate(localPath, storePath string, raw []byte, in *bufio.Reader, out io
 		fmt.Fprintf(out, "    ⚠️  %s is not trusted.\n", absPath)
 	}
 	fmt.Fprintln(out, "    Running a verb here will execute the commands defined in this file.")
+	if preview != "" {
+		fmt.Fprintln(out)
+		fmt.Fprint(out, preview)
+	}
 	fmt.Fprint(out, "    Trust it? [y/N]: ")
 
-	line, _ := in.ReadString('\n')
+	line, err := in.ReadString('\n')
+	// Any read error (EOF/Ctrl-D, interrupted read) denies: a partial line
+	// like "y" without a newline must not grant trust.
+	if err != nil {
+		return fmt.Errorf("%s not trusted; aborting", localPath)
+	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		if err := store.Trust(absPath, hash); err != nil {
@@ -375,6 +465,22 @@ func trustGate(localPath, storePath string, raw []byte, in *bufio.Reader, out io
 	default:
 		return fmt.Errorf("%s not trusted; aborting", localPath)
 	}
+}
+
+// validCommandName reports whether a config command key is safe to register.
+// cobra derives a command's dispatch name from the first word of Use, so only
+// single-word names without control characters (which help output would echo
+// to the terminal) can round-trip as themselves.
+func validCommandName(name string) bool {
+	if name == "" || strings.TrimSpace(name) != name {
+		return false
+	}
+	for _, r := range name {
+		if r <= ' ' || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return false
+		}
+	}
+	return true
 }
 
 func buildCommand(name string, def config.Command) *cobra.Command {
@@ -406,20 +512,20 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 	if len(arguments) > 0 {
 		b.WriteString("\nArguments:\n")
 		for _, arg := range arguments {
-			b.WriteString(fmt.Sprintf("  %-20s", arg.Name))
+			b.WriteString(fmt.Sprintf("  %-20s", output.SanitizeInline(arg.Name)))
 			switch {
 			case len(arg.Values) > 0:
-				b.WriteString(strings.Join(arg.Values, ", "))
+				b.WriteString(output.SanitizeInline(strings.Join(arg.Values, ", ")))
 			case arg.Match != "":
 				if args.IsGlob(arg.Match) {
 					matches := args.GlobMatches(arg.Match, arg.Exclude)
 					if len(matches) > 0 {
-						b.WriteString(strings.Join(matches, ", "))
+						b.WriteString(output.SanitizeInline(strings.Join(matches, ", ")))
 					} else {
 						b.WriteString("(no files found)")
 					}
 				} else {
-					b.WriteString(fmt.Sprintf("^(?:%s)$", arg.Match))
+					b.WriteString(output.SanitizeInline(fmt.Sprintf("^(?:%s)$", arg.Match)))
 				}
 			default:
 				b.WriteString("(no validation)")
@@ -431,10 +537,10 @@ func buildLong(arguments []config.Argument, prompts []config.Prompt) string {
 	if len(prompts) > 0 {
 		b.WriteString("\nPrompts:\n")
 		for _, p := range prompts {
-			b.WriteString(fmt.Sprintf("  %-20s", p.Name))
-			b.WriteString(p.Description)
+			b.WriteString(fmt.Sprintf("  %-20s", output.SanitizeInline(p.Name)))
+			b.WriteString(output.SanitizeInline(p.Description))
 			if p.FromEnvVar != "" {
-				b.WriteString(fmt.Sprintf(" (or $%s)", p.FromEnvVar))
+				b.WriteString(fmt.Sprintf(" (or $%s)", output.SanitizeInline(p.FromEnvVar)))
 			}
 			if p.Sensitive {
 				b.WriteString(" (sensitive)")

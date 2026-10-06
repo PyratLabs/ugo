@@ -22,9 +22,9 @@ go vet ./...               # vet
 - `internal/config/config.go` — loads global + local config, merges them
 - `internal/checker/checker.go` — pre-flight tool dependency validation
 - `internal/version/version.go` — semver extraction and comparison
-- `internal/output/output.go` — colored/emoji output with `--no-color` flag support
-- `internal/output/output_test.go` — ANSI stripping verification
-- `internal/args/args.go` — argument validation (enum, glob, regex)
+- `internal/output/output.go` — colored/emoji output with `--no-color` flag support; all printed messages pass through `Sanitize`/`SanitizeInline` (control/bidi characters → U+FFFD)
+- `internal/output/output_test.go` — ANSI stripping and sanitization verification
+- `internal/args/args.go` — argument validation (enum, glob, regex) plus the shell-safety check (`ShellSafe`)
 - `internal/trust/trust.go` — direnv-style trust store; content-hashed gate over the local config
 
 Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args,trust}/*_test.go`
@@ -34,7 +34,7 @@ Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args,trust}/
 - Verbs are defined in YAML, not hardcoded. Adding a new verb means editing config, not code.
 - Config schema:
   - `shell_options: "set -euo pipefail"` — prepended to all shell scripts (every `cmd` and all `cmds` items)
-  - `commands.<verb>.{cmd, cmds, env, description, group, arguments[]}` — `cmd` is a string, `cmds` is a list of strings, `env` is a map of environment variables, `group` names a help-output section; arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex), optional `exclude` (list of disallowed values)
+  - `commands.<verb>.{cmd, cmds, env, description, group, arguments[], prompts[], platforms[]}` — `cmd` is a string, `cmds` is a list of strings, `env` is a map of environment variables, `group` names a help-output section; arguments are objects with `name`, optional `values` (enum), optional `match` (glob or regex), optional `exclude` (list of disallowed values), optional `raw: true` (opt out of the shell-safety check); prompts are objects with `name`, `description`, optional `sensitive`, optional `from_env_var`
   - `groups[]` — optional list of `{name, description}` defining help-output sections and their order; verbs opt in via `group: <name>`. Undeclared-but-referenced groups are auto-created; once any verb is grouped, ungrouped verbs go under "Other Commands" and built-ins under "Built-in Commands" (see `applyGroups` in `cmd/root.go`)
   - `tools.<binary>.{min_version, max_version, version_cmd, download_url}` — pre-flight checks run before every verb
 - Arguments after the verb are mapped positionally to `arguments` entries and expanded into `${name}` placeholders in `cmd` or `cmds`
@@ -44,8 +44,11 @@ Tests: `cmd/root_test.go`, `internal/{config,checker,version,output,args,trust}/
 - `match` is auto-detected: contains `*` or `?` → glob (checks files on disk); otherwise → regex (full string match, anchored as `^(?:pattern)$` so top-level alternation stays bound)
 - Glob matching accepts full path, basename, basename without extension, or directory name
 - `exclude` filters out values from glob matches and rejects them during validation; excluded values are hidden from help output
+- Values accepted via `values`/`match` must also be shell-safe (`ShellSafe` in `internal/args`: `[A-Za-z0-9._@%+=:,/-]`, no spaces) because they expand unquoted into `sh -c`; `raw: true` opts out. Unconstrained arguments are not checked
+- Prompt names must match `^[A-Za-z_][A-Za-z0-9_]*$` (they become shell variables / env keys); invalid names fail at config load
+- Config command keys must be a single word without whitespace or control characters (`validCommandName` in `cmd/root.go`), otherwise they are skipped with a warning — cobra dispatches on the first word of `Use`, so `"version 2.0"` would shadow the built-in `version`
 - `ugo check` runs tool checks and prints status for each tool
 - Version comparison uses `golang.org/x/mod/semver`; `version_cmd` output is scanned for a semver pattern
 - Running a verb without required arguments (or with invalid args) prints the error then the help, then exits
-- Security model: config (global + local-from-CWD) and argument/prompt values are trusted; `cmd`/`cmds` run via `sh -c` and `${name}` values are expanded as unquoted shell text. Constrain untrusted args with `values`/`match`. Sensitive prompt values are masked in uGo's output only — they still reach the shell (visible in `ps`, and to `set -x`). See README "Security".
-- Trust gate: the local (CWD) config must be trusted before any verb or `check` executes. Trust is content-hashed (path + SHA-256) in `~/.config/<binary>/trust.json`; editing the config revokes it. `PersistentPreRunE` prompts on a TTY; `--trust` records trust without prompting (CI/CD); non-interactive + untrusted aborts. `help`/`version` are never gated. The global config is implicitly trusted.
+- Security model: the local (CWD) config is gated by the trust store; the global config and argument/prompt values are trusted. `cmd`/`cmds` run via `sh -c` and `${name}` values are expanded as unquoted shell text — constrained args (`values`/`match`) are additionally shell-checked (see above), unconstrained args are trusted verbatim. Sensitive prompt values are masked in uGo's output only — they still reach the shell (visible in `ps`, and to `set -x`). See README "Security".
+- Trust gate: the local (CWD) config must be trusted before any verb or `check` executes. Trust is content-hashed (path + SHA-256) in `~/.config/<binary>/trust.json`; editing the config revokes it. `PersistentPreRunE` prompts on a TTY and shows a preview of the commands the file defines; a read error on the answer (e.g. EOF without a newline) denies. `--trust` records trust without prompting (CI/CD); non-interactive + untrusted aborts. `help`/`version` are never gated. The global config is implicitly trusted. Group/world-writable trust store or global config trigger a warning.

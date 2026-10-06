@@ -712,7 +712,7 @@ func gate(localPath, storePath, answer string, allow, interactive bool) (string,
 	}
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader(answer))
-	err = trustGate(localPath, storePath, raw, in, &out, allow, interactive)
+	err = trustGate(localPath, storePath, raw, "", in, &out, allow, interactive)
 	return out.String(), err
 }
 
@@ -734,7 +734,7 @@ func TestTrustGateHashesLoadedBytes(t *testing.T) {
 
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader("y\n"))
-	if err := trustGate(localPath, storePath, raw, in, &out, false, true); err != nil {
+	if err := trustGate(localPath, storePath, raw, "", in, &out, false, true); err != nil {
 		t.Fatalf("trustGate: %v", err)
 	}
 
@@ -827,6 +827,62 @@ func TestTrustGate(t *testing.T) {
 			t.Errorf("expected 'changed' notice on re-prompt, got %q", out)
 		}
 	})
+
+	t.Run("read error without newline denies", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		raw, err := os.ReadFile(localPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// "y" followed by EOF (Ctrl-D) is a partial line: it must not grant
+		// trust.
+		var out bytes.Buffer
+		in := bufio.NewReader(strings.NewReader("y"))
+		if err := trustGate(localPath, storePath, raw, "", in, &out, false, true); err == nil || !strings.Contains(err.Error(), "aborting") {
+			t.Errorf("expected denial on EOF without newline, got %v", err)
+		}
+		store, err := trust.Load(storePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		abs, _ := filepath.Abs(localPath)
+		if store.Status(abs, trust.HashBytes(raw)) == trust.Trusted {
+			t.Error("partial answer must not be recorded as trusted")
+		}
+	})
+
+	t.Run("preview shows the commands being trusted", func(t *testing.T) {
+		localPath, storePath := trustFixture(t)
+		raw, err := os.ReadFile(localPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preview := "    Commands this file defines:\n      build: echo hi\n"
+		var out bytes.Buffer
+		in := bufio.NewReader(strings.NewReader("y\n"))
+		if err := trustGate(localPath, storePath, raw, preview, in, &out, false, true); err != nil {
+			t.Fatalf("trustGate: %v", err)
+		}
+		if !strings.Contains(out.String(), "build: echo hi") {
+			t.Errorf("prompt should include the command preview, got %q", out.String())
+		}
+
+		// A trusted config and --trust skip the prompt, so no preview is shown.
+		var trusted bytes.Buffer
+		if err := trustGate(localPath, storePath, raw, preview, bufio.NewReader(strings.NewReader("")), &trusted, false, true); err != nil {
+			t.Fatalf("trusted run: %v", err)
+		}
+		if strings.Contains(trusted.String(), "build: echo hi") {
+			t.Error("trusted run must not print the preview")
+		}
+		var allowed bytes.Buffer
+		if err := trustGate(localPath, storePath, raw, preview, bufio.NewReader(strings.NewReader("")), &allowed, true, false); err != nil {
+			t.Fatalf("--trust run: %v", err)
+		}
+		if strings.Contains(allowed.String(), "build: echo hi") {
+			t.Error("--trust run must not print the preview")
+		}
+	})
 }
 
 // TestReservedNamesNotShadowable is a regression test for a trust-gate bypass:
@@ -848,6 +904,10 @@ commands:
   help:
     cmd: echo PWNED
   check:
+    cmd: echo PWNED
+  version 2.0:
+    cmd: echo PWNED
+  help x:
     cmd: echo PWNED
   deploy:
     cmd: echo deploy
@@ -894,6 +954,29 @@ commands:
 	if verCmd.Annotations[annExecutesConfig] == "true" {
 		t.Error("version command must not execute config-defined shell")
 	}
+
+	// Keys containing whitespace would still dispatch as their first word
+	// (cobra derives Name from the first word of Use), shadowing the
+	// built-in — they must be skipped entirely.
+	for _, key := range []string{"version 2.0", "help x"} {
+		if c := findCommand(root, key); c != nil {
+			t.Errorf("config command %q must not be registered", key)
+		}
+	}
+	if hc, _, err := root.Find([]string{"help"}); err == nil && hc.Annotations[annExecutesConfig] == "true" {
+		t.Error("a config verb must not capture dispatch for 'help'")
+	}
+}
+
+// findCommand returns the subcommand registered under the exact config key,
+// or nil.
+func findCommand(root *cobra.Command, key string) *cobra.Command {
+	for _, c := range root.Commands() {
+		if c.Use == key || strings.HasPrefix(c.Use, key+" ") {
+			return c
+		}
+	}
+	return nil
 }
 
 // TestConfigVerbsAreTrustGated asserts every config-derived verb (and check)
@@ -1042,4 +1125,88 @@ func TestExpandEnv(t *testing.T) {
 			t.Errorf("STATIC = %q, want %q", got["STATIC"], "static-value")
 		}
 	})
+}
+
+func TestTrustPreview(t *testing.T) {
+	local := &config.Config{Commands: map[string]config.Command{
+		"build": {Cmd: "go build ./..."},
+		"multi": {Cmds: []string{"echo one", "echo two"}},
+		"long":  {Cmd: strings.Repeat("x", 200)},
+		"nop":   {},
+		"gone":  {Cmd: "echo gone"},
+	}}
+	// Effective config: platform resolution removed "gone".
+	effective := &config.Config{Commands: map[string]config.Command{
+		"build": {Cmd: "go build ./..."},
+		"multi": {Cmds: []string{"echo one", "echo two"}},
+		"long":  {Cmd: strings.Repeat("x", 200)},
+		"nop":   {},
+	}}
+
+	got := trustPreview(local, effective)
+	for _, want := range []string{
+		"build: go build ./...",
+		"multi: echo one (+1 more commands)",
+		"nop: (no-op)",
+		"gone: (no command on this platform)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("long command should be truncated in preview:\n%s", got)
+	}
+	if i := strings.Index(got, "long: "); i >= 0 {
+		if line := got[i:]; strings.Contains(line[:strings.Index(line, "\n")], strings.Repeat("x", 101)) {
+			t.Error("truncated line must not include 101st character")
+		}
+	}
+
+	if p := trustPreview(nil, effective); p != "" {
+		t.Errorf("nil local config: preview = %q, want empty", p)
+	}
+	if p := trustPreview(&config.Config{}, effective); p != "" {
+		t.Errorf("no local commands: preview = %q, want empty", p)
+	}
+}
+
+func TestWarnIfWritableByOthers(t *testing.T) {
+	dir := t.TempDir()
+
+	captureStderr := func(fn func()) string {
+		old := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+		fn()
+		w.Close()
+		os.Stderr = old
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		return buf.String()
+	}
+
+	permissive := filepath.Join(dir, "permissive.json")
+	if err := os.WriteFile(permissive, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(permissive, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if out := captureStderr(func() { warnIfWritableByOthers(permissive, "test consequence") }); !strings.Contains(out, "writable by other users") {
+		t.Errorf("expected warning for 0666 file, got %q", out)
+	}
+
+	private := filepath.Join(dir, "private.json")
+	if err := os.WriteFile(private, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := captureStderr(func() { warnIfWritableByOthers(private, "test consequence") }); out != "" {
+		t.Errorf("no warning expected for 0600 file, got %q", out)
+	}
+
+	missing := filepath.Join(dir, "missing.json")
+	if out := captureStderr(func() { warnIfWritableByOthers(missing, "test consequence") }); out != "" {
+		t.Errorf("no warning expected for missing file, got %q", out)
+	}
 }

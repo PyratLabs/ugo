@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -26,6 +27,9 @@ type Argument struct {
 	Values  []string `yaml:"values"`
 	Match   string   `yaml:"match"`
 	Exclude []string `yaml:"exclude"`
+	// Raw opts out of the shell-safety check applied to values accepted via
+	// values/match, for configs that intentionally pass shell text.
+	Raw bool `yaml:"raw"`
 }
 
 // Group defines a named section for organising verbs in help output.
@@ -110,6 +114,12 @@ func resolvePlatforms(commands map[string]Command, goos, goarch string, warn io.
 	}
 }
 
+// shellVarNameRE matches names that are valid shell variables. Prompt names
+// become environment keys for sensitive prompts and ${name} placeholders in
+// scripts, so an invalid name would produce a broken env entry or a shell
+// "bad substitution" at run time.
+var shellVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // Config represents the full YAML configuration
 type Config struct {
 	Commands     map[string]Command `yaml:"commands"`
@@ -119,28 +129,29 @@ type Config struct {
 }
 
 // Load merges global and local configs. Local overrides global. It also
-// returns the local config's raw bytes (nil when absent) so callers can
-// trust-check exactly the content that was parsed, not whatever is on disk
-// by the time the check runs. binaryName is used to locate both configs.
-func Load(binaryName string) (*Config, []byte, error) {
+// returns the local config (for trust-prompt previews) and its raw bytes
+// (nil when absent) so callers can trust-check exactly the content that was
+// parsed, not whatever is on disk by the time the check runs. binaryName is
+// used to locate both configs.
+func Load(binaryName string) (merged, local *Config, localRaw []byte, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting home directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("getting home directory: %w", err)
 	}
 
 	global, _, err := loadConfigFile(filepath.Join(home, ".config", binaryName, "config.yaml"))
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading global config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading global config: %w", err)
 	}
 
-	local, localRaw, err := loadConfigFile(filepath.Join(".", binaryName+".yaml"))
+	local, localRaw, err = loadConfigFile(filepath.Join(".", binaryName+".yaml"))
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading local config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading local config: %w", err)
 	}
 
-	merged := mergeConfigs(global, local)
+	merged = mergeConfigs(global, local)
 	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH, os.Stderr)
-	return merged, localRaw, nil
+	return merged, local, localRaw, nil
 }
 
 // loadConfigFile parses the config at path. raw is the exact bytes that were
@@ -164,10 +175,27 @@ func loadConfigFile(path string) (cfg *Config, raw []byte, err error) {
 		return nil, nil, err
 	}
 
+	if err := validatePromptNames(cfg); err != nil {
+		return nil, nil, err
+	}
+
 	if data == nil {
 		data = []byte{}
 	}
 	return cfg, data, nil
+}
+
+// validatePromptNames enforces the documented rule that prompt names are
+// valid shell variable names, failing at load rather than at run time.
+func validatePromptNames(cfg *Config) error {
+	for name, cmd := range cfg.Commands {
+		for _, p := range cmd.Prompts {
+			if !shellVarNameRE.MatchString(p.Name) {
+				return fmt.Errorf("command %q: prompt %q: name must match %s", name, p.Name, shellVarNameRE)
+			}
+		}
+	}
+	return nil
 }
 
 func mergeConfigs(global, local *Config) *Config {

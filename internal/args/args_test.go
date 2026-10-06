@@ -3,6 +3,7 @@ package args
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PyratLabs/ugo/internal/config"
@@ -241,6 +242,75 @@ func TestValidate(t *testing.T) {
 			t.Error("expected error")
 		}
 	})
+
+	t.Run("regex-accepted value with shell metacharacters rejected", func(t *testing.T) {
+		// A permissive pattern matches, but the value must not be able to
+		// break out of the command it is expanded into.
+		arg := config.Argument{Name: "cmd", Match: ".+"}
+		err := Validate(arg, "dev; rm -rf ~")
+		if err == nil || !strings.Contains(err.Error(), "shell metacharacters") {
+			t.Errorf("Validate(%q) = %v, want shell-metacharacter error", "dev; rm -rf ~", err)
+		}
+	})
+
+	t.Run("glob-accepted value with shell metacharacters rejected", func(t *testing.T) {
+		// Filenames in a cloned repo are attacker-controlled: a glob match
+		// must not let a name like `pwn$(id)` through to sh -c.
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pwn$(id).yaml"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		arg := config.Argument{Name: "file", Match: filepath.Join(dir, "*.yaml")}
+		if err := Validate(arg, "pwn$(id)"); err == nil || !strings.Contains(err.Error(), "shell metacharacters") {
+			t.Errorf("Validate(substituting filename) = %v, want shell-metacharacter error", err)
+		}
+	})
+
+	t.Run("space in constrained value rejected", func(t *testing.T) {
+		// Unquoted expansion word-splits on spaces, so `my file` is broken
+		// (and injectable) regardless of injection intent.
+		arg := config.Argument{Name: "env", Match: ".+"}
+		if err := Validate(arg, "my file"); err == nil {
+			t.Error("Validate(value with space) = nil, want error")
+		}
+	})
+
+	t.Run("raw opts out of shell-safety check", func(t *testing.T) {
+		arg := config.Argument{Name: "opts", Match: ".+", Raw: true}
+		if err := Validate(arg, "a b; c"); err != nil {
+			t.Errorf("Validate(raw) = %v, want nil", err)
+		}
+	})
+
+	t.Run("unconstrained argument is not shell-checked", func(t *testing.T) {
+		arg := config.Argument{Name: "anything"}
+		if err := Validate(arg, "foo; rm -rf ~"); err != nil {
+			t.Errorf("Validate(unconstrained) = %v, want nil", err)
+		}
+	})
+}
+
+func TestShellSafe(t *testing.T) {
+	safe := []string{
+		"dev", "my-service", "web-app-2", "us-east-1",
+		"environments/dev/inventory.yaml", "a.b_c@d%e+f=g:h,i/j-k",
+	}
+	for _, v := range safe {
+		if !ShellSafe(v) {
+			t.Errorf("ShellSafe(%q) = false, want true", v)
+		}
+	}
+
+	unsafe := []string{
+		"", " ", "my file", "a;b", "$(id)", "`id`", "a|b", "a&b", "a>b",
+		"a\nb", "a\tb", `a"b`, "a'b", "a(b)", "a{b}", "a*b", "a?b",
+		"a\\b", "a!b", "a#b", "a~b", "a<b", "a$b", "a`b", "a<b",
+	}
+	for _, v := range unsafe {
+		if ShellSafe(v) {
+			t.Errorf("ShellSafe(%q) = true, want false", v)
+		}
+	}
 }
 
 func TestValidateArgs(t *testing.T) {

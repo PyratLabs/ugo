@@ -163,6 +163,42 @@ commands:
 			t.Error("expected error for invalid yaml")
 		}
 	})
+
+	t.Run("valid prompt name accepted", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(`
+commands:
+  ask:
+    cmd: echo ${api_key}
+    prompts:
+      - name: api_key
+        description: "Key"
+        sensitive: true
+`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := loadConfigFile(path); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid prompt name rejected", func(t *testing.T) {
+		// Prompt names become shell variables / environment keys; an invalid
+		// name would fail at run time with a shell bad-substitution (or
+		// corrupt the child environment), so reject it at load.
+		for _, name := range []string{"api-key", "9key", "with space", "a=b"} {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			content := "commands:\n  ask:\n    cmd: echo hi\n    prompts:\n      - name: \"" + name + "\"\n        description: \"d\"\n"
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := loadConfigFile(path); err == nil {
+				t.Errorf("prompt name %q: expected error, got nil", name)
+			}
+		}
+	})
 }
 
 func TestResolvePlatforms(t *testing.T) {

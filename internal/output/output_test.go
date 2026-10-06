@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -91,4 +92,67 @@ func containsANSI(s string) bool {
 		}
 	}
 	return false
+}
+
+func TestSanitize(t *testing.T) {
+	SetNoColor(true)
+	defer SetNoColor(false)
+
+	t.Run("control characters replaced", func(t *testing.T) {
+		in := "a\x1b]52;c;stolen\x07b\rc\x07d\x7f"
+		got := Sanitize(in)
+		for i := 0; i < len(got); i++ {
+			if r := rune(got[i]); r < 0x20 && r != '\t' && r != '\n' || r == 0x7f || r == '\x1b' {
+				t.Errorf("Sanitize left unsafe byte %#U in %q", r, got)
+			}
+		}
+		if !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+			t.Errorf("Sanitize dropped safe content: %q", got)
+		}
+	})
+
+	t.Run("bidi overrides replaced", func(t *testing.T) {
+		got := Sanitize("safe\u202Eevil\u2066x")
+		if strings.ContainsRune(got, '\u202E') || strings.ContainsRune(got, '\u2066') {
+			t.Errorf("Sanitize left bidi control: %q", got)
+		}
+	})
+
+	t.Run("newline and tab preserved", func(t *testing.T) {
+		if got := Sanitize("a\nb\tc"); got != "a\nb\tc" {
+			t.Errorf("Sanitize(%q) = %q, want unchanged", "a\nb\tc", got)
+		}
+	})
+
+	t.Run("SanitizeInline strips newlines", func(t *testing.T) {
+		got := SanitizeInline("a\r\nb\nc")
+		if strings.ContainsAny(got, "\r\n") {
+			t.Errorf("SanitizeInline(%q) = %q, want no line breaks", "a\r\nb\nc", got)
+		}
+		if !strings.Contains(got, "a") || !strings.Contains(got, "b") || !strings.Contains(got, "c") {
+			t.Errorf("SanitizeInline dropped content: %q", got)
+		}
+	})
+
+	t.Run("clean text unchanged", func(t *testing.T) {
+		const s = "terraform plan -out=tfplan"
+		if Sanitize(s) != s || SanitizeInline(s) != s {
+			t.Errorf("clean text was modified: %q / %q", Sanitize(s), SanitizeInline(s))
+		}
+	})
+
+	t.Run("CheckFail scrubs messages", func(t *testing.T) {
+		oldStderr := os.Stderr
+		rErr, wErr, _ := os.Pipe()
+		os.Stderr = wErr
+		CheckFail("bad \x1b]0;pwned\x07 value")
+		wErr.Close()
+		os.Stderr = oldStderr
+
+		var buf bytes.Buffer
+		buf.ReadFrom(rErr)
+		if strings.Contains(buf.String(), "\x1b") {
+			t.Errorf("CheckFail output contains escape: %q", buf.String())
+		}
+	})
 }
