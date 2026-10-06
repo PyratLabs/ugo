@@ -230,9 +230,9 @@ commands:
 
 | Field | Description |
 |-------|-------------|
-| `name` | Template variable name (used as `${name}` in commands). Must be a valid shell variable name — letters, digits, underscores, not starting with a digit; uGo rejects invalid names at load time |
+| `name` | Template variable name (used as `${name}` in commands) |
 | `description` | Question shown to the user at the prompt |
-| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output. The value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores) |
+| `sensitive` | If `true`, input is hidden during entry and displayed as `********` in command output. The value is passed to the command through its **environment** instead of being expanded into the command text — the shell expands `${name}` at run time, so the secret never appears in the process argv. The name must be a valid shell variable name (letters, digits, underscores, not starting with a digit); a verb with an invalid one is skipped with a warning |
 | `from_env_var` | If set, the prompt is skipped when this environment variable is already set; its value is used directly. Falls through to interactive prompt when unset or empty |
 
 Running the above command will prompt for the token, mask it on screen, expand `${manifest}` as text, and hand `${api_token}` to the shell to expand from the environment:
@@ -287,7 +287,7 @@ Arguments support three validation modes:
 
 Glob vs regex is auto-detected: if the pattern contains `*` or `?` it's treated as a file glob.
 
-Because `${name}` values are expanded unquoted into `sh -c`, a constrained argument additionally requires its value to be **shell-safe**: letters, digits, and `_.@%+=:,/-` only — no spaces, quotes, operators, or substitutions. This is what makes `values`/`match` a real safety boundary for untrusted input (filenames in a cloned repo can contain `;` or `$(...)`). If a value must be passed through as raw shell text, opt out per argument with `raw: true`:
+Because `${name}` values are expanded unquoted into `sh -c`, a `match`-constrained argument additionally requires its value to be **shell-safe**: letters, digits, and `_.@%+=:,/-` only — no spaces, quotes, operators, or substitutions, and not empty. This is what makes `match` a real safety boundary for untrusted input (filenames in a cloned repo can contain `;` or `$(...)`); glob matches that fail the check are hidden from help. `values` enums are exempt — you wrote them. If a value must be passed through as raw shell text, opt out per argument with `raw: true`:
 
 ```yaml
 arguments:
@@ -446,11 +446,12 @@ $ ugo build
 
     Commands this file defines:
       build: go build -o ugo .
+        env: CGO_ENABLED=0
 
     Trust it? [y/N]:
 ```
 
-The prompt lists the commands the file defines so you can see what you are approving, not just a path and a hash.
+The prompt lists everything in the file that executes so you can see what you are approving, not just a path and a hash: `shell_options`, each verb's first line (with a count of the lines that follow) and its `env`, and any tool `version_cmd`.
 
 Answering `y` records the config as trusted and runs it; anything else aborts without executing. Trust is **content-addressed**: uGo stores the path together with a SHA-256 of the file's contents in `~/.config/<binary>/trust.json`. If the config is later edited (e.g. a `git pull` changes it), trust is automatically revoked and you are prompted again.
 
@@ -471,7 +472,7 @@ If a verb can receive values from an untrusted or external source (CI variables,
 - `values: [...]` — accept only an explicit set (exact match), or
 - `match: "<regex-or-glob>"` — validate against a fully-anchored regex, or an on-disk glob.
 
-Constrained values are then also checked to be **shell-safe** (letters, digits, and `_.@%+=:,/-` — see [Argument validation](#argument-validation)), so a filename containing `;` or `$(...)`, or a value accepted by a permissive pattern, cannot break out of the command. Set `raw: true` on an argument to opt out of that check when the value is intentionally shell text.
+`match`-constrained values are then also checked to be **shell-safe** (letters, digits, and `_.@%+=:,/-` — see [Argument validation](#argument-validation)), so a filename containing `;` or `$(...)`, or a value accepted by a permissive pattern, cannot break out of the command. Set `raw: true` on an argument to opt out of that check when the value is intentionally shell text.
 
 Arguments with neither `values` nor `match` are accepted verbatim and trusted as shell text. Unresolved `${name}` placeholders (a typo, or a deliberate `$HOME`) are passed through and expanded by the shell.
 

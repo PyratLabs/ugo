@@ -275,6 +275,22 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("enum values are not shell-checked", func(t *testing.T) {
+		// The config author wrote them; the config itself is trust-gated.
+		arg := config.Argument{Name: "region", Values: []string{"us east"}, Match: ".+"}
+		if err := Validate(arg, "us east"); err != nil {
+			t.Errorf("Validate(enum value) = %v, want nil", err)
+		}
+	})
+
+	t.Run("empty constrained value gets its own error", func(t *testing.T) {
+		arg := config.Argument{Name: "n", Match: "[0-9]{0,3}"}
+		err := Validate(arg, "")
+		if err == nil || strings.Contains(err.Error(), "metacharacters") {
+			t.Errorf("Validate(\"\") = %v, want an empty-value error", err)
+		}
+	})
+
 	t.Run("raw opts out of shell-safety check", func(t *testing.T) {
 		arg := config.Argument{Name: "opts", Match: ".+", Raw: true}
 		if err := Validate(arg, "a b; c"); err != nil {

@@ -6,7 +6,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 
@@ -28,7 +27,7 @@ type Argument struct {
 	Match   string   `yaml:"match"`
 	Exclude []string `yaml:"exclude"`
 	// Raw opts out of the shell-safety check applied to values accepted via
-	// values/match, for configs that intentionally pass shell text.
+	// match, for configs that intentionally pass shell text.
 	Raw bool `yaml:"raw"`
 }
 
@@ -114,12 +113,6 @@ func resolvePlatforms(commands map[string]Command, goos, goarch string, warn io.
 	}
 }
 
-// shellVarNameRE matches names that are valid shell variables. Prompt names
-// become environment keys for sensitive prompts and ${name} placeholders in
-// scripts, so an invalid name would produce a broken env entry or a shell
-// "bad substitution" at run time.
-var shellVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
 // Config represents the full YAML configuration
 type Config struct {
 	Commands     map[string]Command `yaml:"commands"`
@@ -175,27 +168,10 @@ func loadConfigFile(path string) (cfg *Config, raw []byte, err error) {
 		return nil, nil, err
 	}
 
-	if err := validatePromptNames(cfg); err != nil {
-		return nil, nil, err
-	}
-
 	if data == nil {
 		data = []byte{}
 	}
 	return cfg, data, nil
-}
-
-// validatePromptNames enforces the documented rule that prompt names are
-// valid shell variable names, failing at load rather than at run time.
-func validatePromptNames(cfg *Config) error {
-	for name, cmd := range cfg.Commands {
-		for _, p := range cmd.Prompts {
-			if !shellVarNameRE.MatchString(p.Name) {
-				return fmt.Errorf("command %q: prompt %q: name must match %s", name, p.Name, shellVarNameRE)
-			}
-		}
-	}
-	return nil
 }
 
 func mergeConfigs(global, local *Config) *Config {

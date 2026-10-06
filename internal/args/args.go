@@ -31,15 +31,17 @@ func Validate(arg config.Argument, value string) error {
 		}
 	}
 
-	// A constrained argument promises its accepted values are safe to expand
-	// unquoted into "sh -c". Globs match on-disk names (which may contain
-	// metacharacters) and permissive regexes accept them too, so enforce the
-	// shell-safety of the value itself. "raw: true" opts out for configs that
-	// intentionally pass shell text.
-	if !arg.Raw && (len(arg.Values) > 0 || arg.Match != "") {
-		if !ShellSafe(value) {
-			return fmt.Errorf("argument '%s': value %q contains shell metacharacters; tighten the pattern or set 'raw: true'", arg.Name, value)
+	// A match-constrained argument promises its accepted values are safe to
+	// expand unquoted into "sh -c". Globs match on-disk names (which may
+	// contain metacharacters) and permissive regexes accept them too, so
+	// enforce the shell-safety of the value itself. Enum values are exempt:
+	// the config author wrote them, and the config is already trust-gated.
+	// "raw: true" opts out for configs that intentionally pass shell text.
+	if !arg.Raw && len(arg.Values) == 0 && arg.Match != "" && !ShellSafe(value) {
+		if value == "" {
+			return fmt.Errorf("argument '%s': empty value would drop a word from the command; set 'raw: true' to allow it", arg.Name)
 		}
+		return fmt.Errorf("argument '%s': value %q contains shell metacharacters; tighten the pattern or set 'raw: true'", arg.Name, value)
 	}
 
 	return nil
