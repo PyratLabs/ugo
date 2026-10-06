@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/PyratLabs/ugo/internal/config"
 )
@@ -30,7 +31,39 @@ func Validate(arg config.Argument, value string) error {
 		}
 	}
 
+	// A match-constrained argument promises its accepted values are safe to
+	// expand unquoted into "sh -c". Globs match on-disk names (which may
+	// contain metacharacters) and permissive regexes accept them too, so
+	// enforce the shell-safety of the value itself. Enum values are exempt:
+	// the config author wrote them, and the config is already trust-gated.
+	// "raw: true" opts out for configs that intentionally pass shell text.
+	if !arg.Raw && len(arg.Values) == 0 && arg.Match != "" && !ShellSafe(value) {
+		if value == "" {
+			return fmt.Errorf("argument '%s': empty value would drop a word from the command; set 'raw: true' to allow it", arg.Name)
+		}
+		return fmt.Errorf("argument '%s': value %q contains shell metacharacters; tighten the pattern or set 'raw: true'", arg.Name, value)
+	}
+
 	return nil
+}
+
+// ShellSafe reports whether value can be expanded unquoted into a shell
+// script without changing its structure: letters, digits, and a small set of
+// inert punctuation only — no whitespace, quotes, operators, substitutions,
+// or control characters.
+func ShellSafe(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("_.@%+=:,/-", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateExclude(name string, exclude []string, actual string) error {

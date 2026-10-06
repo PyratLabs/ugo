@@ -26,6 +26,9 @@ type Argument struct {
 	Values  []string `yaml:"values"`
 	Match   string   `yaml:"match"`
 	Exclude []string `yaml:"exclude"`
+	// Raw opts out of the shell-safety check applied to values accepted via
+	// match, for configs that intentionally pass shell text.
+	Raw bool `yaml:"raw"`
 }
 
 // Group defines a named section for organising verbs in help output.
@@ -119,28 +122,29 @@ type Config struct {
 }
 
 // Load merges global and local configs. Local overrides global. It also
-// returns the local config's raw bytes (nil when absent) so callers can
-// trust-check exactly the content that was parsed, not whatever is on disk
-// by the time the check runs. binaryName is used to locate both configs.
-func Load(binaryName string) (*Config, []byte, error) {
+// returns the local config (for trust-prompt previews) and its raw bytes
+// (nil when absent) so callers can trust-check exactly the content that was
+// parsed, not whatever is on disk by the time the check runs. binaryName is
+// used to locate both configs.
+func Load(binaryName string) (merged, local *Config, localRaw []byte, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting home directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("getting home directory: %w", err)
 	}
 
 	global, _, err := loadConfigFile(filepath.Join(home, ".config", binaryName, "config.yaml"))
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading global config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading global config: %w", err)
 	}
 
-	local, localRaw, err := loadConfigFile(filepath.Join(".", binaryName+".yaml"))
+	local, localRaw, err = loadConfigFile(filepath.Join(".", binaryName+".yaml"))
 	if err != nil {
-		return nil, nil, fmt.Errorf("loading local config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading local config: %w", err)
 	}
 
-	merged := mergeConfigs(global, local)
+	merged = mergeConfigs(global, local)
 	resolvePlatforms(merged.Commands, runtime.GOOS, runtime.GOARCH, os.Stderr)
-	return merged, localRaw, nil
+	return merged, local, localRaw, nil
 }
 
 // loadConfigFile parses the config at path. raw is the exact bytes that were
